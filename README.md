@@ -9,6 +9,7 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 
 - 支持 SillyTavern 开启 Basic Auth 时的内部 API 调用，避免 `/csrf-token` 返回 401。
 - 自动把角色回复里的 `<branches>` A–J 选项渲染成 Telegram 内联按钮；点击按钮会把所选字母作为下一条用户消息发送到当前会话。
+- 自动识别 Subtext think、`<think>` 和 `<thinking>` 思考区，在 Telegram 中显示为默认折叠、点击可展开的引用；同时清理残留的思考标签和内部 HTML 注释。
 
 ## 安装
 

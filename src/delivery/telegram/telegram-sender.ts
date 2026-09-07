@@ -1,4 +1,5 @@
 ﻿import { GrammyError, type Context } from "grammy";
+import type { MessageEntity } from "grammy/types";
 import { TelegramChatQueue } from "./telegram-chat-queue";
 
 export type TelegramPriority = "critical" | "normal" | "ephemeral";
@@ -7,11 +8,13 @@ type BotContext = Context;
 
 interface SendTextOptions {
   replyMarkup?: unknown;
+  entities?: MessageEntity[];
   priority?: TelegramPriority;
 }
 
 interface EditTextOptions {
   replyMarkup?: unknown;
+  entities?: MessageEntity[];
   priority?: TelegramPriority;
 }
 
@@ -40,6 +43,7 @@ export class TelegramSender {
   public async sendText(ctx: BotContext, chatId: string | number, text: string, options: SendTextOptions = {}): Promise<{ message_id: number }> {
     return this.run(chatId, "send", options.priority ?? "normal", text.length, undefined, async () => {
       const message = await ctx.api.sendMessage(Number(chatId), text, {
+        entities: options.entities,
         reply_markup: options.replyMarkup as never,
       });
       return { message_id: message.message_id };
@@ -59,6 +63,7 @@ export class TelegramSender {
     await this.run(chatId, "edit", options.priority ?? "normal", text.length, messageId, async () => {
       try {
         await ctx.api.editMessageText(Number(chatId), messageId, text, {
+          entities: options.entities,
           reply_markup: options.replyMarkup as never,
         });
       } catch (error) {

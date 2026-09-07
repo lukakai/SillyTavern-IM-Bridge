@@ -1,4 +1,5 @@
 ﻿import { InlineKeyboard } from "grammy";
+import type { MessageEntity } from "grammy/types";
 import type {
   ActiveSession,
   CharacterSummary,
@@ -191,7 +192,70 @@ export interface TelegramBranchChoice {
 
 export interface TelegramResponseRender {
   text: string;
+  entities: MessageEntity[];
   keyboard: InlineKeyboard | null;
+}
+
+export interface TelegramMessagePart {
+  text: string;
+  entities?: MessageEntity[];
+}
+
+interface ThoughtPlaceholderResult {
+  text: string;
+  thoughts: string[];
+}
+
+function extractThoughtPlaceholders(rawText: string): ThoughtPlaceholderResult {
+  const thoughts: string[] = [];
+  let text = rawText
+    .replace(/\\(?=<!--|<\/?(?:content|branches|details|summary|think|thinking)\b)/gi, "")
+    .replace(/^\\(?=#{1,6}\s*(?:正文|content)\s*$)/gim, "");
+  const stash = (content: string): string => {
+    const cleaned = content.trim();
+    if (!cleaned) return "";
+    const index = thoughts.push(cleaned) - 1;
+    return `\u0000ST_THINK_${index}\u0000`;
+  };
+
+  text = text.replace(
+    /<!--\s*begin_of_(?:Subtext_)?think\s*-->([\s\S]*?)<!--\s*end_of_(?:Subtext_)?think\s*-->/gi,
+    (_match, content: string) => stash(content),
+  );
+  text = text.replace(
+    /<(think|thinking)\b[^>]*>([\s\S]*?)<\/\1>/gi,
+    (_match, _tag: string, content: string) => stash(content),
+  );
+
+  return { text, thoughts };
+}
+
+function materializeThoughts(text: string, thoughts: string[]): { text: string; entities: MessageEntity[] } {
+  const entities: MessageEntity[] = [];
+  const tokenPattern = /\u0000ST_THINK_(\d+)\u0000/g;
+  const label = "💭 思考过程（点击展开）\n";
+  let output = "";
+  let cursor = 0;
+
+  for (const match of text.matchAll(tokenPattern)) {
+    const matchIndex = match.index ?? 0;
+    const thought = thoughts[Number(match[1])] ?? "";
+    output += text.slice(cursor, matchIndex);
+    output += label;
+    const offset = output.length;
+    output += thought;
+    if (thought) {
+      entities.push({
+        type: "expandable_blockquote",
+        offset,
+        length: thought.length,
+      });
+    }
+    cursor = matchIndex + match[0].length;
+  }
+
+  output += text.slice(cursor);
+  return { text: output.trim(), entities };
 }
 
 function parseBranchChoices(branchBody: string): TelegramBranchChoice[] {
@@ -225,40 +289,75 @@ function parseBranchChoices(branchBody: string): TelegramBranchChoice[] {
 
 /** Converts SillyTavern branch markup into Telegram text and inline choice buttons. */
 export function renderTelegramResponse(rawText: string): TelegramResponseRender {
-  const text = rawText.replace(/<\/?content\b[^>]*>/gi, "").trim();
+  const extracted = extractThoughtPlaceholders(rawText);
+  let text = extracted.text
+    .replace(/<\/?content\b[^>]*>/gi, "")
+    .replace(/<\/?(?:think|thinking)\b[^>]*>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/^\s*#{1,6}\s*(?:正文|content)\s*$/gim, "")
+    .replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, "\n\n")
+    .trim();
   const branchPattern = /<branches\b[^>]*>([\s\S]*?)<\/branches>/i;
   const match = branchPattern.exec(text);
+  let keyboard: InlineKeyboard | null = null;
 
-  if (!match) {
-    return { text, keyboard: null };
-  }
-
-  const choices = parseBranchChoices(match[1]);
-  if (choices.length === 0) {
-    const cleaned = text
+  if (match) {
+    const choices = parseBranchChoices(match[1]);
+    if (choices.length === 0) {
+      text = text
       .replace(/<\/?branches\b[^>]*>/gi, "")
       .replace(/<summary\b[^>]*>[\s\S]*?<\/summary>/gi, "")
       .replace(/<\/?details\b[^>]*>/gi, "")
       .trim();
-    return { text: cleaned, keyboard: null };
+    } else {
+      const renderedChoices = [
+        "请选择：",
+        "",
+        ...choices.map((choice) => `${choice.label}. ${choice.text}`),
+      ].join("\n");
+      text = `${text.slice(0, match.index)}${renderedChoices}${text.slice(match.index + match[0].length)}`.trim();
+      keyboard = new InlineKeyboard();
+
+      choices.forEach((choice, index) => {
+        keyboard!.text(choice.label, `branch:${choice.label}`);
+        if ((index + 1) % 5 === 0 || index === choices.length - 1) {
+          keyboard!.row();
+        }
+      });
+    }
   }
 
-  const renderedChoices = [
-    "请选择：",
-    "",
-    ...choices.map((choice) => `${choice.label}. ${choice.text}`),
-  ].join("\n");
-  const renderedText = `${text.slice(0, match.index)}${renderedChoices}${text.slice(match.index + match[0].length)}`.trim();
-  const keyboard = new InlineKeyboard();
+  const materialized = materializeThoughts(text, extracted.thoughts);
+  return { text: materialized.text, entities: materialized.entities, keyboard };
+}
 
-  choices.forEach((choice, index) => {
-    keyboard.text(choice.label, `branch:${choice.label}`);
-    if ((index + 1) % 5 === 0 || index === choices.length - 1) {
-      keyboard.row();
-    }
+export function splitTelegramResponse(rendered: TelegramResponseRender, maxLength = 3500): TelegramMessagePart[] {
+  const textParts = splitTelegramText(rendered.text, maxLength);
+  let searchOffset = 0;
+
+  return textParts.map((text) => {
+    const sourceOffset = rendered.text.indexOf(text, searchOffset);
+    const sourceEnd = sourceOffset + text.length;
+    searchOffset = sourceEnd;
+
+    const entities = rendered.entities.flatMap((entity): MessageEntity[] => {
+      const entityStart = entity.offset;
+      const entityEnd = entity.offset + entity.length;
+      const clippedStart = Math.max(entityStart, sourceOffset);
+      const clippedEnd = Math.min(entityEnd, sourceEnd);
+      if (clippedStart >= clippedEnd) return [];
+      return [{
+        ...entity,
+        offset: clippedStart - sourceOffset,
+        length: clippedEnd - clippedStart,
+      }];
+    });
+
+    return {
+      text,
+      ...(entities.length > 0 ? { entities } : {}),
+    };
   });
-
-  return { text: renderedText, keyboard };
 }
 
 export function renderHelp(): string {

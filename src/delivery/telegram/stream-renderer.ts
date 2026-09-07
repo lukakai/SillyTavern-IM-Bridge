@@ -1,5 +1,5 @@
 ﻿import type { Context } from "grammy";
-import { renderTelegramResponse, splitTelegramText } from "./render";
+import { renderTelegramResponse, splitTelegramResponse, splitTelegramText, type TelegramMessagePart } from "./render";
 import { TelegramSender } from "./telegram-sender";
 
 type BotContext = Context;
@@ -96,7 +96,7 @@ export class StreamRenderer {
 
   private async renderFinal(fullText: string): Promise<void> {
     const rendered = renderTelegramResponse(fullText);
-    const parts = splitTelegramText(rendered.text, this.hardChunkSize);
+    const parts = splitTelegramResponse(rendered, this.hardChunkSize);
     await this.applyParts(parts, "critical", true, rendered.keyboard ?? undefined);
     this.lastRenderedText = fullText;
     this.lastCommittedLength = fullText.length;
@@ -104,18 +104,23 @@ export class StreamRenderer {
   }
 
   private async applyParts(
-    parts: string[],
+    parts: Array<string | TelegramMessagePart>,
     priority: "ephemeral" | "critical",
     allowAdditionalMessages: boolean,
     finalReplyMarkup: unknown = undefined,
   ): Promise<void> {
     for (let index = 0; index < parts.length; index += 1) {
-      const part = parts[index];
+      const rawPart = parts[index];
+      const part = typeof rawPart === "string" ? { text: rawPart } : rawPart;
       const replyMarkup = index === parts.length - 1 ? finalReplyMarkup : undefined;
       if (index < this.messageIds.length) {
-        if (this.sentParts[index] !== part || replyMarkup !== undefined) {
-          await this.sender.editText(this.ctx, this.chatId, this.messageIds[index], part, { priority, replyMarkup });
-          this.sentParts[index] = part;
+        if (this.sentParts[index] !== part.text || replyMarkup !== undefined || part.entities !== undefined) {
+          await this.sender.editText(this.ctx, this.chatId, this.messageIds[index], part.text, {
+            priority,
+            replyMarkup,
+            entities: part.entities,
+          });
+          this.sentParts[index] = part.text;
         }
         continue;
       }
@@ -124,9 +129,13 @@ export class StreamRenderer {
         break;
       }
 
-      const message = await this.sender.sendText(this.ctx, this.chatId, part, { priority, replyMarkup });
+      const message = await this.sender.sendText(this.ctx, this.chatId, part.text, {
+        priority,
+        replyMarkup,
+        entities: part.entities,
+      });
       this.messageIds.push(message.message_id);
-      this.sentParts.push(part);
+      this.sentParts.push(part.text);
     }
   }
 }
