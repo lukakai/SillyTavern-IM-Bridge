@@ -184,6 +184,83 @@ export function splitTelegramText(text: string, maxLength = 3500): string[] {
   return chunks;
 }
 
+export interface TelegramBranchChoice {
+  label: string;
+  text: string;
+}
+
+export interface TelegramResponseRender {
+  text: string;
+  keyboard: InlineKeyboard | null;
+}
+
+function parseBranchChoices(branchBody: string): TelegramBranchChoice[] {
+  const plainBody = branchBody
+    .replace(/<summary\b[^>]*>[\s\S]*?<\/summary>/gi, "")
+    .replace(/<\/?details\b[^>]*>/gi, "")
+    .trim();
+  const choices: TelegramBranchChoice[] = [];
+
+  for (const rawLine of plainBody.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const match = line.match(/^([A-Z]|\d{1,2})[.)、:：]\s*(.+)$/i);
+    if (match) {
+      choices.push({
+        label: match[1].toUpperCase(),
+        text: match[2].trim(),
+      });
+      continue;
+    }
+
+    const current = choices.at(-1);
+    if (current) {
+      current.text = `${current.text}\n${line}`;
+    }
+  }
+
+  return choices.slice(0, 20);
+}
+
+/** Converts SillyTavern branch markup into Telegram text and inline choice buttons. */
+export function renderTelegramResponse(rawText: string): TelegramResponseRender {
+  const text = rawText.replace(/<\/?content\b[^>]*>/gi, "").trim();
+  const branchPattern = /<branches\b[^>]*>([\s\S]*?)<\/branches>/i;
+  const match = branchPattern.exec(text);
+
+  if (!match) {
+    return { text, keyboard: null };
+  }
+
+  const choices = parseBranchChoices(match[1]);
+  if (choices.length === 0) {
+    const cleaned = text
+      .replace(/<\/?branches\b[^>]*>/gi, "")
+      .replace(/<summary\b[^>]*>[\s\S]*?<\/summary>/gi, "")
+      .replace(/<\/?details\b[^>]*>/gi, "")
+      .trim();
+    return { text: cleaned, keyboard: null };
+  }
+
+  const renderedChoices = [
+    "请选择：",
+    "",
+    ...choices.map((choice) => `${choice.label}. ${choice.text}`),
+  ].join("\n");
+  const renderedText = `${text.slice(0, match.index)}${renderedChoices}${text.slice(match.index + match[0].length)}`.trim();
+  const keyboard = new InlineKeyboard();
+
+  choices.forEach((choice, index) => {
+    keyboard.text(choice.label, `branch:${choice.label}`);
+    if ((index + 1) % 5 === 0 || index === choices.length - 1) {
+      keyboard.row();
+    }
+  });
+
+  return { text: renderedText, keyboard };
+}
+
 export function renderHelp(): string {
   return [
     "可用命令：",

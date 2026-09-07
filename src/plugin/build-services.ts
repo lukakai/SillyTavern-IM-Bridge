@@ -53,6 +53,7 @@ export function buildServices(): AppServices {
   const stClient = new StClient({
     baseUrl: runtime.stInternalBaseUrl,
     hostHeader: runtime.stHostHeader,
+    authorizationHeader: runtime.stAuthorizationHeader,
     timeoutMs: runtime.stTimeoutMs,
     generateTimeoutMs: runtime.stGenerateTimeoutMs,
     generateIdleTimeoutMs: runtime.stGenerateIdleTimeoutMs,

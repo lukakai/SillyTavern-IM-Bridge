@@ -1,10 +1,12 @@
 import path from "node:path";
+import { Buffer } from "node:buffer";
 
 export interface RuntimeContext {
   pluginRoot: string;
   databasePath: string;
   stInternalBaseUrl: string;
   stHostHeader: string | null;
+  stAuthorizationHeader: string | null;
   /** 普通 ST API（列表/读聊天/保存）超时。 */
   stTimeoutMs: number;
   /** 生成接口硬上限（绝对超时）。流式/非流式都会用。 */
@@ -33,11 +35,17 @@ export function loadRuntimeContext(): RuntimeContext {
   const databasePath = path.join(pluginRoot, "data", "app.db");
   const explicitBase = strEnv("SILLYTAVERN_INTERNAL_BASE_URL");
   const port = strEnv("SILLYTAVERN_LISTEN_PORT") ?? "8000";
+  const basicAuthUsername = strEnv("SILLYTAVERN_BASIC_AUTH_USERNAME");
+  const basicAuthPassword = strEnv("SILLYTAVERN_BASIC_AUTH_PASSWORD");
+  const stAuthorizationHeader = basicAuthUsername && basicAuthPassword
+    ? `Basic ${Buffer.from(`${basicAuthUsername}:${basicAuthPassword}`, "utf8").toString("base64")}`
+    : null;
   return {
     pluginRoot,
     databasePath,
     stInternalBaseUrl: explicitBase ?? `http://127.0.0.1:${port}`,
     stHostHeader: strEnv("SILLYTAVERN_HOST_HEADER"),
+    stAuthorizationHeader,
     stTimeoutMs: intEnv("ST_TIMEOUT_MS", 15000),
     // 长文叙事角色（如叙事 GM）经常超过 2 分钟；默认 15 分钟硬上限。
     stGenerateTimeoutMs: intEnv("ST_GENERATE_TIMEOUT_MS", 900_000),

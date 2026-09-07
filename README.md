@@ -5,13 +5,18 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 > 配套 UI 扩展：[SillyTavern-IM-Bridge-UI](https://github.com/rinmashiro0529/SillyTavern-IM-Bridge-UI)
 > 完整交接文档：本仓库 `PROJECT_HANDOVER.md`
 
+## 本 Fork 增强
+
+- 支持 SillyTavern 开启 Basic Auth 时的内部 API 调用，避免 `/csrf-token` 返回 401。
+- 自动把角色回复里的 `<branches>` A–J 选项渲染成 Telegram 内联按钮；点击按钮会把所选字母作为下一条用户消息发送到当前会话。
+
 ## 安装
 
 1. 在 SillyTavern 的 `config.yaml` 设置 `enableServerPlugins: true`（**默认值是 `false`**，必须显式打开）。
 2. 进入 SillyTavern 的 `plugins/` 目录：
    ```sh
    cd plugins
-   git clone https://github.com/rinmashiro0529/SillyTavern-IM-Bridge.git st-im-bridge
+   git clone https://github.com/lukakai/SillyTavern-IM-Bridge.git st-im-bridge
    ```
    仓库已包含构建好的 `dist/index.js`，**最终用户无需 `npm install`**（仅二次开发者需要）。
 
@@ -28,6 +33,12 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
   ```sh
   export SILLYTAVERN_INTERNAL_BASE_URL=http://127.0.0.1:<port>
   ```
+- 如果 SillyTavern 开启了 `basicAuthMode`，请给 SillyTavern 容器设置与 `config.yaml` 中 `basicAuthUser` 一致的环境变量：
+  ```sh
+  SILLYTAVERN_BASIC_AUTH_USERNAME=<用户名>
+  SILLYTAVERN_BASIC_AUTH_PASSWORD=<密码>
+  ```
+  插件只在内存中生成内部请求所需的 Basic Auth 请求头，不会把这两个值写入插件数据库。
 
 ## 多账号
 

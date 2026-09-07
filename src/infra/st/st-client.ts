@@ -22,6 +22,7 @@ import { pickLatestDialogueRecord } from "./st-chat-mapper";
 interface StClientOptions {
   baseUrl: string;
   hostHeader: string | null;
+  authorizationHeader: string | null;
   /** 普通 ST API 超时。 */
   timeoutMs: number;
   /** 生成接口硬上限（绝对超时）。 */
@@ -419,12 +420,16 @@ export class StClient {
   }
 
   private buildCommonHeaders(): Record<string, string> {
-    if (!this.options.hostHeader) {
-      return {};
+    const headers: Record<string, string> = {};
+
+    if (this.options.hostHeader) {
+      headers.Host = this.options.hostHeader;
     }
 
-    return {
-      Host: this.options.hostHeader,
-    };
+    if (this.options.authorizationHeader) {
+      headers.Authorization = this.options.authorizationHeader;
+    }
+
+    return headers;
   }
 }

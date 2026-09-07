@@ -1,5 +1,5 @@
 ﻿import type { Context } from "grammy";
-import { splitTelegramText } from "./render";
+import { renderTelegramResponse, splitTelegramText } from "./render";
 import { TelegramSender } from "./telegram-sender";
 
 type BotContext = Context;
@@ -95,19 +95,26 @@ export class StreamRenderer {
   }
 
   private async renderFinal(fullText: string): Promise<void> {
-    const parts = splitTelegramText(fullText, this.hardChunkSize);
-    await this.applyParts(parts, "critical", true);
+    const rendered = renderTelegramResponse(fullText);
+    const parts = splitTelegramText(rendered.text, this.hardChunkSize);
+    await this.applyParts(parts, "critical", true, rendered.keyboard ?? undefined);
     this.lastRenderedText = fullText;
     this.lastCommittedLength = fullText.length;
     this.lastRenderAt = Date.now();
   }
 
-  private async applyParts(parts: string[], priority: "ephemeral" | "critical", allowAdditionalMessages: boolean): Promise<void> {
+  private async applyParts(
+    parts: string[],
+    priority: "ephemeral" | "critical",
+    allowAdditionalMessages: boolean,
+    finalReplyMarkup: unknown = undefined,
+  ): Promise<void> {
     for (let index = 0; index < parts.length; index += 1) {
       const part = parts[index];
+      const replyMarkup = index === parts.length - 1 ? finalReplyMarkup : undefined;
       if (index < this.messageIds.length) {
-        if (this.sentParts[index] !== part) {
-          await this.sender.editText(this.ctx, this.chatId, this.messageIds[index], part, { priority });
+        if (this.sentParts[index] !== part || replyMarkup !== undefined) {
+          await this.sender.editText(this.ctx, this.chatId, this.messageIds[index], part, { priority, replyMarkup });
           this.sentParts[index] = part;
         }
         continue;
@@ -117,7 +124,7 @@ export class StreamRenderer {
         break;
       }
 
-      const message = await this.sender.sendText(this.ctx, this.chatId, part, { priority });
+      const message = await this.sender.sendText(this.ctx, this.chatId, part, { priority, replyMarkup });
       this.messageIds.push(message.message_id);
       this.sentParts.push(part);
     }

@@ -249,6 +249,89 @@ function getLatestTelegramTurn(deps: AppServices, accountId: string, chatId: str
   });
 }
 
+async function sendConversationText(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  userId: string,
+  text: string,
+  clientTurnId: string,
+  userMessageId: number | null,
+): Promise<void> {
+  const accountId = getAccountId(userId, deps, botCtx);
+  let turnRecordId: number | null = null;
+
+  try {
+    const state = deps.sessionService.requireActiveSession(accountId);
+    const requestId = createRequestId();
+    const traceId = requestId;
+    if (ctx.chat?.id) {
+      turnRecordId = deps.repositories.turnRepository.createTurnRecord({
+        accountId,
+        channel: "telegram",
+        sessionKey: buildSessionKey(state.activeCharacterAvatar!, state.activeChatFile!),
+        clientTurnId,
+        requestId,
+        traceId,
+        operation: "telegram_send_stream",
+        status: "started",
+        externalRefs: {
+          chatId: String(ctx.chat.id),
+          ...(userMessageId ? { userMessageId } : {}),
+          botMessageIds: [],
+          characterAvatar: state.activeCharacterAvatar,
+          characterName: state.activeCharacterName,
+          chatFile: state.activeChatFile,
+        },
+      });
+    }
+
+    const placeholder = await replyText(ctx, botCtx, "已收到，正在继续当前会话。");
+    const streamRenderer = createStreamRenderer(ctx, deps, botCtx, placeholder.message_id);
+    const result = await deps.conversationService.sendMessageStream({
+      accountId,
+      avatar: state.activeCharacterAvatar!,
+      characterName: state.activeCharacterName!,
+      chatFile: state.activeChatFile!,
+      text,
+      modelOverride: state.activeModelOverride,
+      onProgress: async (event) => {
+        if (event.type === "delta") {
+          await streamRenderer.onProgress(event.fullText);
+        }
+      },
+    });
+
+    await streamRenderer.onDone(result.replyText);
+
+    if (turnRecordId && ctx.chat?.id) {
+      deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
+        status: "completed",
+        errorMessage: null,
+        externalRefs: {
+          chatId: String(ctx.chat.id),
+          ...(userMessageId ? { userMessageId } : {}),
+          botMessageIds: streamRenderer.getMessageIds(),
+          characterAvatar: state.activeCharacterAvatar,
+          characterName: state.activeCharacterName,
+          chatFile: state.activeChatFile,
+          latestMessageId: result.latestRecord?.messageId ?? null,
+          latestTurnId: result.latestRecord?.turnId ?? null,
+        },
+      });
+    }
+  } catch (error) {
+    if (turnRecordId) {
+      deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
+        status: "failed",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const message = error instanceof AppError || error instanceof Error ? error.message : String(error);
+    await replyText(ctx, botCtx, `生成失败：${message}`, { priority: "critical" });
+  }
+}
+
 export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx: BotInstanceContext): void {
   bot.command("bind", async (ctx) => {
     const userId = getTelegramUserId(ctx);
@@ -815,6 +898,32 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     const accountId = getAccountId(userId, deps, botCtx);
     const data = ctx.callbackQuery.data;
 
+    if (data.startsWith("branch:")) {
+      const choice = data.slice("branch:".length).trim().toUpperCase();
+      if (!/^(?:[A-Z]|\d{1,2})$/.test(choice)) {
+        await ctx.answerCallbackQuery({ text: "这个选项已经失效" });
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: `已选择 ${choice}` });
+      try {
+        await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
+      } catch {
+        // The choice can still be processed if Telegram could not remove stale buttons.
+      }
+      const selectionMessage = await replyText(ctx, botCtx, `你选择了：${choice}`);
+      await sendConversationText(
+        ctx,
+        deps,
+        botCtx,
+        userId,
+        choice,
+        `branch:${ctx.callbackQuery.id}`,
+        selectionMessage.message_id,
+      );
+      return;
+    }
+
     if (data.startsWith("characters:")) {
       await ctx.answerCallbackQuery();
       await replyCharacters(ctx, deps, botCtx, Number(data.split(":")[1] ?? 0));
@@ -1023,78 +1132,14 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       return;
     }
 
-    let accountId: string;
-    let turnRecordId: number | null = null;
-    try {
-      accountId = getAccountId(userId, deps, botCtx);
-      const state = deps.sessionService.requireActiveSession(accountId);
-      const requestId = createRequestId();
-      const traceId = requestId;
-      if (ctx.chat?.id) {
-        turnRecordId = deps.repositories.turnRepository.createTurnRecord({
-          accountId,
-          channel: "telegram",
-          sessionKey: buildSessionKey(state.activeCharacterAvatar!, state.activeChatFile!),
-          clientTurnId: String(ctx.message.message_id),
-          requestId,
-          traceId,
-          operation: "telegram_send_stream",
-          status: "started",
-          externalRefs: {
-            chatId: String(ctx.chat.id),
-            userMessageId: ctx.message.message_id,
-            botMessageIds: [],
-            characterAvatar: state.activeCharacterAvatar,
-            characterName: state.activeCharacterName,
-            chatFile: state.activeChatFile,
-          },
-        });
-      }
-      const placeholder = await replyText(ctx, botCtx, "已收到，正在继续当前会话。");
-      const streamRenderer = createStreamRenderer(ctx, deps, botCtx, placeholder.message_id);
-      const result = await deps.conversationService.sendMessageStream({
-        accountId,
-        avatar: state.activeCharacterAvatar!,
-        characterName: state.activeCharacterName!,
-        chatFile: state.activeChatFile!,
-        text: ctx.message.text,
-        modelOverride: state.activeModelOverride,
-        onProgress: async (event) => {
-          if (event.type === "delta") {
-            await streamRenderer.onProgress(event.fullText);
-          }
-        },
-      });
-
-      await streamRenderer.onDone(result.replyText);
-
-      if (ctx.chat?.id) {
-        if (turnRecordId) {
-          deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
-            status: "completed",
-            errorMessage: null,
-            externalRefs: {
-              chatId: String(ctx.chat.id),
-              userMessageId: ctx.message.message_id,
-              botMessageIds: streamRenderer.getMessageIds(),
-              characterAvatar: state.activeCharacterAvatar,
-              characterName: state.activeCharacterName,
-              chatFile: state.activeChatFile,
-              latestMessageId: result.latestRecord?.messageId ?? null,
-              latestTurnId: result.latestRecord?.turnId ?? null,
-            },
-          });
-        }
-      }
-    } catch (error) {
-      if (turnRecordId) {
-        deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
-          status: "failed",
-          errorMessage: error instanceof Error ? error.message : String(error),
-        });
-      }
-      const message = error instanceof AppError || error instanceof Error ? error.message : String(error);
-      await replyText(ctx, botCtx, `生成失败：${message}`, { priority: "critical" });
-    }
+    await sendConversationText(
+      ctx,
+      deps,
+      botCtx,
+      userId,
+      ctx.message.text,
+      String(ctx.message.message_id),
+      ctx.message.message_id,
+    );
   });
 }
