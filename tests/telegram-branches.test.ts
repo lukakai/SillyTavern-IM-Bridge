@@ -42,6 +42,31 @@ describe("renderTelegramResponse", () => {
     expect(rendered.keyboard).toBeNull();
   });
 
+  it("hides MVU maintenance markup and appends a native expandable status card", () => {
+    const rendered = renderTelegramResponse([
+      "<content>可见正文。</content>",
+      "<UpdateVariable>",
+      "<Analysis>hidden</Analysis>",
+      '<JSONPatch>[{"op":"delta","path":"/角色/协奏值","value":2}]</JSONPatch>',
+      "</UpdateVariable>",
+      "<StatusPlaceHolderImpl/>",
+    ].join("\n"), {
+      statData: {
+        世界: { 时间: "10:10", 当前地点: "机场" },
+        角色: { 协奏值: 117, 锁定: false },
+      },
+      rangeHints: { "/角色/协奏值": { min: 0, max: 233 } },
+    });
+
+    expect(rendered.text).toContain("可见正文。");
+    expect(rendered.text).toContain("📊 MVU 状态（点击展开）");
+    expect(rendered.text).toContain("协奏值：█████░░░░░ 117/233");
+    expect(rendered.text).toContain("锁定：❌ 否");
+    expect(rendered.text).not.toContain("UpdateVariable");
+    expect(rendered.text).not.toContain("StatusPlaceHolderImpl");
+    expect(rendered.entities.some((entity) => entity.type === "expandable_blockquote")).toBe(true);
+  });
+
   it("renders subtext thinking as a native expandable blockquote", () => {
     const thought = "内部推演第一行。\n内部推演第二行。";
     const rendered = renderTelegramResponse([

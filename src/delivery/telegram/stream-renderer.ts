@@ -1,4 +1,5 @@
 ﻿import type { Context } from "grammy";
+import type { MvuStatusSnapshot } from "../../core/models/index";
 import { renderTelegramResponse, splitTelegramResponse, splitTelegramText, type TelegramMessagePart } from "./render";
 import { TelegramSender } from "./telegram-sender";
 
@@ -68,12 +69,12 @@ export class StreamRenderer {
     await this.renderProgress(fullText);
   }
 
-  public async onDone(finalText: string): Promise<void> {
+  public async onDone(finalText: string, mvuStatus: MvuStatusSnapshot | null = null): Promise<void> {
     if (!finalText) {
       return;
     }
 
-    await this.renderFinal(finalText);
+    await this.renderFinal(finalText, mvuStatus);
     this.sender.markRoundCompleted(this.chatId);
   }
 
@@ -94,8 +95,8 @@ export class StreamRenderer {
     this.lastRenderAt = Date.now();
   }
 
-  private async renderFinal(fullText: string): Promise<void> {
-    const rendered = renderTelegramResponse(fullText);
+  private async renderFinal(fullText: string, mvuStatus: MvuStatusSnapshot | null): Promise<void> {
+    const rendered = renderTelegramResponse(fullText, mvuStatus);
     const parts = splitTelegramResponse(rendered, this.hardChunkSize);
     await this.applyParts(parts, "critical", true, rendered.keyboard ?? undefined);
     this.lastRenderedText = fullText;

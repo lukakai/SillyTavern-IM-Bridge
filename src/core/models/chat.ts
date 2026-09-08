@@ -33,6 +33,22 @@ export interface ChatMessage {
   [key: string]: unknown;
 }
 
+export interface MvuRangeHint {
+  min: number;
+  max: number;
+}
+
+export interface MvuCardConfig {
+  initialStateText: string | null;
+  updatePrompt: string;
+  rangeHints: Record<string, MvuRangeHint>;
+}
+
+export interface MvuStatusSnapshot {
+  statData: Record<string, unknown>;
+  rangeHints: Record<string, MvuRangeHint>;
+}
+
 export interface LatestDialogueRecord {
   messageId: string;
   turnId: string | null;
@@ -70,4 +86,5 @@ export interface CharacterCardDetails {
   scenario: string;
   firstMes: string;
   mesExample: string;
+  mvu: MvuCardConfig | null;
 }

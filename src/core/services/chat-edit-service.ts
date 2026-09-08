@@ -1,6 +1,7 @@
 ﻿import type { ChatMessage, HistorySyncRecord, HistorySyncResult, LastTurnDetails, LatestDialogueRecord, StreamEvent } from "../models/index";
 import type { HistorySyncRepository, HistorySyncSnapshot } from "../ports/repositories";
 import { AppError } from "../../shared/errors/app-error";
+import type { MvuStatusSnapshot } from "../models/index";
 import { buildSessionKey, buildSessionMutationKey } from "../../shared/utils/ids";
 import {
   formatPreviewText,
@@ -305,6 +306,7 @@ export class ChatEditService {
     removedAssistant: LatestDialogueRecord | null;
     replyText: string;
     latestRecord: LatestDialogueRecord | null;
+    mvuStatus: MvuStatusSnapshot | null;
   }> {
     return this.sessionTaskQueue.runExclusive(
       buildSessionMutationKey(params.accountId, params.avatar, params.chatFile),
@@ -339,6 +341,7 @@ export class ChatEditService {
             : null,
           replyText: result.replyText,
           latestRecord: result.latestRecord,
+          mvuStatus: result.mvuStatus,
         };
       },
     );

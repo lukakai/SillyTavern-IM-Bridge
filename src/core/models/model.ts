@@ -1,4 +1,4 @@
-﻿import type { LatestDialogueRecord } from "./chat";
+﻿import type { LatestDialogueRecord, MvuStatusSnapshot } from "./chat";
 
 export interface StGenerationSettings {
   username: string;
@@ -20,6 +20,7 @@ export interface ModelSummary {
 export interface SendMessageResult {
   replyText: string;
   latestRecord: LatestDialogueRecord | null;
+  mvuStatus: MvuStatusSnapshot | null;
 }
 
 export type StreamEvent =

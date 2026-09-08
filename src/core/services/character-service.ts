@@ -2,6 +2,7 @@
 import type { CharacterCardDetails, CharacterSummary, ChatMessage, ChatSearchResult, StoredChatSession } from "../models/index";
 import { StClient } from "../../infra/st/st-client";
 import { normalizeChatFileName, timestampToMillis } from "../../infra/st/st-chat-mapper";
+import { attachMvuSnapshot, createMvuTurnContext, processMvuReply } from "./mvu-service";
 
 function applyPlaceholders(input: string, characterName: string, userName: string): string {
   return input
@@ -56,15 +57,15 @@ function buildChatMetadata(userName: string, characterName: string): ChatMessage
   };
 }
 
-function buildAssistantOpeningMessage(characterName: string, text: string): ChatMessage {
-  return {
+function buildAssistantOpeningMessage(characterName: string, text: string, snapshot: Record<string, unknown> | null): ChatMessage {
+  return attachMvuSnapshot({
     name: characterName,
     is_user: false,
     is_system: false,
     send_date: new Date().toISOString(),
     mes: text,
     extra: {},
-  };
+  }, snapshot);
 }
 
 export class CharacterService {
@@ -115,6 +116,11 @@ export class CharacterService {
       card.name,
       settings.username,
     ).trim();
+    const mvuContext = createMvuTurnContext(card, [], settings.username);
+    const mvu = processMvuReply(openingText, mvuContext);
+    if (mvu?.error) {
+      console.warn(JSON.stringify({ scope: "mvu", event: "opening_patch_ignored", error: mvu.error }));
+    }
 
     await this.stClient.saveChat({
       avatar,
@@ -122,7 +128,7 @@ export class CharacterService {
       chatFile,
       chat: [
         buildChatMetadata(settings.username, card.name),
-        buildAssistantOpeningMessage(card.name, openingText),
+        buildAssistantOpeningMessage(card.name, openingText, mvu?.snapshot ?? mvuContext?.snapshot ?? null),
       ],
     });
 

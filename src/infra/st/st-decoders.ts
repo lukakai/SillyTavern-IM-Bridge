@@ -4,6 +4,8 @@
   ChatMessage,
   ChatSearchResult,
   ModelSummary,
+  MvuCardConfig,
+  MvuRangeHint,
   StGenerationSettings,
 } from "../../core/models/index";
 import { timestampToMillis, normalizeChatFileName } from "./st-chat-mapper";
@@ -31,6 +33,92 @@ export function decodeCharacterSummaries(payload: unknown): CharacterSummary[] {
     });
 }
 
+function cardData(item: any): any {
+  return item?.data && typeof item.data === "object" ? item.data : item;
+}
+
+function expandRangePath(rawPath: string): string[] {
+  const placeholder = rawPath.match(/\$\{([^}]+)\}/);
+  if (!placeholder) return [rawPath];
+  return placeholder[1].split("|").map((choice) => rawPath.replace(placeholder[0], choice.trim()));
+}
+
+function pointerPath(parts: string[]): string {
+  return `/${parts.map((part) => part.replaceAll("~", "~0").replaceAll("/", "~1")).join("/")}`;
+}
+
+function extractRangeHints(text: string): Record<string, MvuRangeHint> {
+  const result: Record<string, MvuRangeHint> = {};
+  const stack: Array<{ indent: number; key: string }> = [];
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const indent = (rawLine.match(/^[ \t]*/)?.[0] ?? "").replaceAll("\t", "  ").length;
+    const line = rawLine.trim();
+    if (!line || line.startsWith("-") || line.startsWith("#")) continue;
+    const match = line.match(/^([^:]+):(?:\s*(.*))?$/);
+    if (!match) continue;
+    const key = match[1].trim();
+    const value = (match[2] ?? "").trim();
+
+    while (stack.length > 0 && stack.at(-1)!.indent >= indent) stack.pop();
+
+    if (key === "range") {
+      const range = value.match(/(-?\d+(?:\.\d+)?)\s*(?:~|～|-|至)\s*(-?\d+(?:\.\d+)?)/);
+      const fieldParts = stack.map((item) => item.key).filter((part) => part !== "变量更新规则");
+      if (!range || fieldParts.length === 0) continue;
+      const min = Number(range[1]);
+      const max = Number(range[2]);
+      if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) continue;
+
+      const last = fieldParts.at(-1)!;
+      const paths = last.includes(".") || last.includes("${")
+        ? expandRangePath(last).map((path) => path.split(".").filter(Boolean))
+        : [fieldParts];
+      for (const pathParts of paths) result[pointerPath(pathParts)] = { min, max };
+      continue;
+    }
+
+    if (!value) stack.push({ indent, key });
+  }
+
+  return result;
+}
+
+function decodeMvuCardConfig(item: any): MvuCardConfig | null {
+  const data = cardData(item);
+  const entries = Array.isArray(data?.character_book?.entries) ? data.character_book.entries : [];
+  const helperScripts = Array.isArray(data?.extensions?.tavern_helper?.scripts)
+    ? data.extensions.tavern_helper.scripts
+    : [];
+  const hasMvuScript = helperScripts.some((script: any) => {
+    const content = typeof script?.content === "string" ? script.content : "";
+    return /MagVarUpdate|registerMvuSchema/i.test(content);
+  });
+  const initialEntry = entries.find((entry: any) => /\[initvar\]/i.test(String(entry?.comment ?? "")));
+  const hasMvuProtocolEntry = entries.some((entry: any) => {
+    const comment = String(entry?.comment ?? "");
+    const content = typeof entry?.content === "string" ? entry.content : "";
+    return /\[mvu_update\]/i.test(comment)
+      || /\{\{format_message_variable::stat_data\}\}/i.test(content)
+      || /<UpdateVariable\b/i.test(content);
+  });
+  const promptEntries = entries.filter((entry: any) => {
+    if (entry?.enabled === false || typeof entry?.content !== "string") return false;
+    const comment = String(entry?.comment ?? "");
+    return /\[mvu_update\]/i.test(comment)
+      || /^变量列表$/i.test(comment.trim())
+      || /\{\{format_message_variable::stat_data\}\}/i.test(entry.content);
+  });
+  if (!hasMvuScript && !hasMvuProtocolEntry) return null;
+
+  const updatePrompt = promptEntries.map((entry: any) => String(entry.content)).join("\n\n").trim();
+  return {
+    initialStateText: typeof initialEntry?.content === "string" ? initialEntry.content : null,
+    updatePrompt,
+    rangeHints: extractRangeHints(updatePrompt),
+  };
+}
+
 export function decodeCharacterCard(payload: unknown, avatar: string): CharacterCardDetails {
   const items = Array.isArray(payload) ? payload : [];
   const item = items.find((entry: any) => entry?.avatar === avatar);
@@ -39,14 +127,16 @@ export function decodeCharacterCard(payload: unknown, avatar: string): Character
     throw createStPayloadError("CHARACTER_NOT_FOUND", `Character not found: ${avatar}`);
   }
 
+  const data = cardData(item);
   return {
     avatar: String(item.avatar),
-    name: typeof item.name === "string" ? item.name : "",
-    description: typeof item.description === "string" ? item.description : "",
-    personality: typeof item.personality === "string" ? item.personality : "",
-    scenario: typeof item.scenario === "string" ? item.scenario : "",
-    firstMes: typeof item.first_mes === "string" ? item.first_mes : "",
-    mesExample: typeof item.mes_example === "string" ? item.mes_example : "",
+    name: typeof item.name === "string" ? item.name : (typeof data?.name === "string" ? data.name : ""),
+    description: typeof item.description === "string" ? item.description : (typeof data?.description === "string" ? data.description : ""),
+    personality: typeof item.personality === "string" ? item.personality : (typeof data?.personality === "string" ? data.personality : ""),
+    scenario: typeof item.scenario === "string" ? item.scenario : (typeof data?.scenario === "string" ? data.scenario : ""),
+    firstMes: typeof item.first_mes === "string" ? item.first_mes : (typeof data?.first_mes === "string" ? data.first_mes : ""),
+    mesExample: typeof item.mes_example === "string" ? item.mes_example : (typeof data?.mes_example === "string" ? data.mes_example : ""),
+    mvu: decodeMvuCardConfig(item),
   };
 }
 

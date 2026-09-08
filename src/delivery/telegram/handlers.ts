@@ -302,7 +302,7 @@ async function sendConversationText(
       },
     });
 
-    await streamRenderer.onDone(result.replyText);
+    await streamRenderer.onDone(result.replyText, result.mvuStatus);
 
     if (turnRecordId && ctx.chat?.id) {
       deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
@@ -733,7 +733,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
         },
       });
 
-      await streamRenderer.onDone(result.replyText);
+      await streamRenderer.onDone(result.replyText, result.mvuStatus);
 
       if (latestTurn) {
         deps.repositories.turnRepository.updateTurnRecord(latestTurn.id, {

@@ -11,6 +11,12 @@ import { pickLatestDialogueRecord } from "../../infra/st/st-chat-mapper";
 import { StClient } from "../../infra/st/st-client";
 import { normalizeAssistantReply, normalizeModelInputText } from "./reply-format";
 import { SessionTaskQueue } from "./session-task-queue";
+import {
+  attachMvuSnapshot,
+  createMvuTurnContext,
+  processMvuReply,
+  type MvuReplyResult,
+} from "./mvu-service";
 
 function substitutePlaceholders(input: string, characterName: string, userName: string): string {
   return input
@@ -105,14 +111,24 @@ function buildUserMessage(userName: string, text: string): ChatMessage {
   };
 }
 
-function buildAssistantMessage(characterName: string, text: string): ChatMessage {
-  return {
+function buildAssistantMessage(characterName: string, text: string, mvu: MvuReplyResult | null = null): ChatMessage {
+  return attachMvuSnapshot({
     name: characterName,
     is_user: false,
+    is_system: false,
     send_date: new Date().toISOString(),
     mes: text,
     extra: {},
-  };
+  }, mvu?.snapshot ?? null);
+}
+
+function logMvuError(mvu: MvuReplyResult | null): void {
+  if (!mvu?.error) return;
+  console.warn(JSON.stringify({
+    scope: "mvu",
+    event: "patch_ignored",
+    error: mvu.error,
+  }));
 }
 
 function assertChatIntact(avatar: string, chatFile: string, chat: ChatMessage[]): void {
@@ -208,8 +224,11 @@ export class ConversationService {
       settings.model = params.modelOverride.trim();
     }
 
+    const mvuContext = createMvuTurnContext(card, chat, settings.username);
+
     const openAiMessages: Array<{ role: string; content: string; name?: string }> = [
       { role: "system", content: buildSystemPrompt(card, settings) },
+      ...(mvuContext?.prompt ? [{ role: "system", content: mvuContext.prompt }] : []),
       ...toOpenAiMessages(getRecentMessages(chat), settings),
       { role: "user", name: settings.username, content: normalizeModelInputText(params.text) },
     ];
@@ -220,10 +239,12 @@ export class ConversationService {
     });
 
     const replyText = normalizeAssistantReply(params.characterName, extractAssistantReply(generated));
+    const mvu = processMvuReply(replyText, mvuContext);
+    logMvuError(mvu);
     const updatedChat = [
       ...chat,
       buildUserMessage(settings.username, params.text),
-      buildAssistantMessage(params.characterName, replyText),
+      buildAssistantMessage(params.characterName, replyText, mvu),
     ];
 
     await this.stClient.saveChat({
@@ -236,6 +257,7 @@ export class ConversationService {
     return {
       replyText,
       latestRecord: pickLatestDialogueRecord(params.avatar, params.chatFile, updatedChat),
+      mvuStatus: mvu?.status ?? null,
     };
   }
 
@@ -302,8 +324,11 @@ export class ConversationService {
         settings.model = params.modelOverride.trim();
       }
 
+      const mvuContext = createMvuTurnContext(card, chat, settings.username);
+
       const openAiMessages: Array<{ role: string; content: string; name?: string }> = [
         { role: "system", content: buildSystemPrompt(card, settings) },
+        ...(mvuContext?.prompt ? [{ role: "system", content: mvuContext.prompt }] : []),
         ...toOpenAiMessages(getRecentMessages(chat), settings),
       ];
 
@@ -330,9 +355,11 @@ export class ConversationService {
       });
 
       const replyText = normalizeAssistantReply(params.characterName, extractAssistantReply(generated));
+      const mvu = processMvuReply(replyText, mvuContext);
+      logMvuError(mvu);
       const updatedChat = params.includeUserMessage
-        ? [...chat, buildUserMessage(settings.username, params.text), buildAssistantMessage(params.characterName, replyText)]
-        : [...chat, buildAssistantMessage(params.characterName, replyText)];
+        ? [...chat, buildUserMessage(settings.username, params.text), buildAssistantMessage(params.characterName, replyText, mvu)]
+        : [...chat, buildAssistantMessage(params.characterName, replyText, mvu)];
 
       await this.stClient.saveChat({
         avatar: params.avatar,
@@ -344,6 +371,7 @@ export class ConversationService {
       const result = {
         replyText,
         latestRecord: pickLatestDialogueRecord(params.avatar, params.chatFile, updatedChat),
+        mvuStatus: mvu?.status ?? null,
       };
 
       await params.onProgress?.({

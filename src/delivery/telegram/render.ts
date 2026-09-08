@@ -7,6 +7,8 @@ import type {
   LastTurnDetails,
   LatestDialogueRecord,
   ModelSummary,
+  MvuRangeHint,
+  MvuStatusSnapshot,
   RecentSession,
 } from "../../core/models/index";
 import { timestampToMillis } from "../../infra/st/st-chat-mapper";
@@ -287,10 +289,130 @@ function parseBranchChoices(branchBody: string): TelegramBranchChoice[] {
   return choices.slice(0, 20);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function pointerPath(parts: string[]): string {
+  return `/${parts.map((part) => part.replaceAll("~", "~0").replaceAll("/", "~1")).join("/")}`;
+}
+
+function compactMvuValue(value: unknown, maxLength = 180): string {
+  let text: string;
+  if (typeof value === "boolean") {
+    text = value ? "✅ 是" : "❌ 否";
+  } else if (value === null) {
+    text = "空";
+  } else if (Array.isArray(value)) {
+    text = value.every((item) => ["string", "number", "boolean"].includes(typeof item))
+      ? value.join("、")
+      : JSON.stringify(value);
+  } else {
+    text = String(value);
+  }
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
+}
+
+function resolveRangeHint(
+  path: string,
+  label: string,
+  value: number,
+  hints: Record<string, MvuRangeHint>,
+): MvuRangeHint | null {
+  const explicit = hints[path];
+  if (explicit) return explicit;
+  if (/值$|进度$|百分比$|好感度$|怀疑度$/.test(label) && value >= 0 && value <= 100) {
+    return { min: 0, max: 100 };
+  }
+  return null;
+}
+
+function renderMvuNumber(label: string, value: number, path: string, hints: Record<string, MvuRangeHint>): string {
+  const range = resolveRangeHint(path, label, value, hints);
+  if (!range) return `${label}：${value}`;
+  const ratio = Math.min(1, Math.max(0, (value - range.min) / (range.max - range.min)));
+  const filled = Math.round(ratio * 10);
+  const bar = `${"█".repeat(filled)}${"░".repeat(10 - filled)}`;
+  return `${label}：${bar} ${value}/${range.max}`;
+}
+
+export function renderMvuStatus(status: MvuStatusSnapshot, maxLength = 2600): string {
+  const lines: string[] = [];
+  let usedLength = 0;
+  let truncated = false;
+  const append = (line: string): boolean => {
+    const cost = line.length + (lines.length > 0 ? 1 : 0);
+    if (usedLength + cost > maxLength) {
+      truncated = true;
+      return false;
+    }
+    lines.push(line);
+    usedLength += cost;
+    return true;
+  };
+
+  const renderFields = (value: Record<string, unknown>, pathParts: string[], depth: number): void => {
+    for (const [key, child] of Object.entries(value)) {
+      if (key.startsWith("_")) continue;
+      const nextPath = [...pathParts, key];
+      if (isRecord(child)) {
+        if (!append(`${"  ".repeat(depth)}▸ ${key}`)) return;
+        renderFields(child, nextPath, depth + 1);
+      } else if (typeof child === "number") {
+        if (!append(`${"  ".repeat(depth)}${renderMvuNumber(key, child, pointerPath(nextPath), status.rangeHints)}`)) return;
+      } else if (!append(`${"  ".repeat(depth)}${key}：${compactMvuValue(child)}`)) {
+        return;
+      }
+    }
+  };
+
+  const rootEntries = Object.entries(status.statData).filter(([key]) => !key.startsWith("_"));
+  const rootScalars = rootEntries.filter(([, value]) => !isRecord(value));
+  const rootObjects = rootEntries.filter(([, value]) => isRecord(value));
+  if (rootScalars.length > 0) {
+    append("🌐 当前状态");
+    renderFields(Object.fromEntries(rootScalars), [], 0);
+  }
+  for (const [key, value] of rootObjects) {
+    if (!append(`${lines.length > 0 ? "\n" : ""}${/世界|时间|地点/.test(key) ? "🌍" : /选项|事件/.test(key) ? "🎯" : "👤"} ${key}`)) break;
+    renderFields(value as Record<string, unknown>, [key], 0);
+  }
+  if (truncated) append("…状态内容过长，已省略其余字段");
+  return lines.join("\n").trim();
+}
+
+function appendMvuStatus(
+  text: string,
+  entities: MessageEntity[],
+  status: MvuStatusSnapshot | null,
+): { text: string; entities: MessageEntity[] } {
+  if (!status) return { text, entities };
+  const body = renderMvuStatus(status);
+  if (!body) return { text, entities };
+  const label = "📊 MVU 状态（点击展开）\n";
+  const prefix = text ? `${text}\n\n${label}` : label;
+  return {
+    text: `${prefix}${body}`,
+    entities: [
+      ...entities,
+      {
+        type: "expandable_blockquote",
+        offset: prefix.length,
+        length: body.length,
+      },
+    ],
+  };
+}
+
 /** Converts SillyTavern branch markup into Telegram text and inline choice buttons. */
-export function renderTelegramResponse(rawText: string): TelegramResponseRender {
+export function renderTelegramResponse(rawText: string, mvuStatus: MvuStatusSnapshot | null = null): TelegramResponseRender {
   const extracted = extractThoughtPlaceholders(rawText);
   let text = extracted.text
+    .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, "")
+    .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*$/gi, "")
+    .replace(/<status_current_variables\b[^>]*>[\s\S]*?<\/status_current_variables>/gi, "")
+    .replace(/<StatusPlaceHolderImpl\s*\/?>/gi, "")
     .replace(/<\/?content\b[^>]*>/gi, "")
     .replace(/<\/?(?:think|thinking)\b[^>]*>/gi, "")
     .replace(/<!--[\s\S]*?-->/g, "")
@@ -328,7 +450,8 @@ export function renderTelegramResponse(rawText: string): TelegramResponseRender 
   }
 
   const materialized = materializeThoughts(text, extracted.thoughts);
-  return { text: materialized.text, entities: materialized.entities, keyboard };
+  const withMvu = appendMvuStatus(materialized.text, materialized.entities, mvuStatus);
+  return { text: withMvu.text, entities: withMvu.entities, keyboard };
 }
 
 export function splitTelegramResponse(rendered: TelegramResponseRender, maxLength = 3500): TelegramMessagePart[] {
