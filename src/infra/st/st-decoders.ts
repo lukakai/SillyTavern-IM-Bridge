@@ -7,6 +7,7 @@
   MvuCardConfig,
   MvuRangeHint,
   StGenerationSettings,
+  XuanxiangCardConfig,
 } from "../../core/models/index";
 import { timestampToMillis, normalizeChatFileName } from "./st-chat-mapper";
 import { createStPayloadError } from "./st-errors";
@@ -119,6 +120,66 @@ function decodeMvuCardConfig(item: any): MvuCardConfig | null {
   };
 }
 
+const XUANXIANG_RULE_NAMES = [
+  "选项栏总览",
+  "选项栏输出规范",
+  "异能对抗输出规范",
+  "rule_互动回合与选项控制",
+] as const;
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Resolves the card's explicit xuanxiang rule bundle without evaluating EJS.
+ * Disabled lorebook entries are only read when an enabled injector explicitly
+ * references the xuanxiang output specification.
+ */
+function decodeXuanxiangCardConfig(item: any): XuanxiangCardConfig | null {
+  const data = cardData(item);
+  const entries = Array.isArray(data?.character_book?.entries) ? data.character_book.entries : [];
+  const specification = entries.find((entry: any) => {
+    const comment = String(entry?.comment ?? "").trim();
+    const content = typeof entry?.content === "string" ? entry.content : "";
+    return comment === "选项栏输出规范" && /<xuanxiang>/i.test(content);
+  });
+  if (!specification) return null;
+
+  const injectors = entries.filter((entry: any) => entry?.enabled !== false && typeof entry?.content === "string");
+  const injector = injectors.find((entry: any) => /getwi\(\s*null\s*,\s*['"]选项栏输出规范['"]\s*\)/i.test(entry.content));
+  if (specification.enabled === false && !injector) return null;
+
+  const selectedEntries = XUANXIANG_RULE_NAMES
+    .map((name) => entries.find((entry: any) => String(entry?.comment ?? "").trim() === name))
+    .filter((entry: any) => typeof entry?.content === "string");
+  const promptText = selectedEntries
+    .map((entry: any) => String(entry.content).trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+  if (!promptText) return null;
+
+  if (!injector) {
+    return { promptText, activationPath: null, activationMin: null };
+  }
+
+  const injectorText = String(injector.content);
+  const variableMatch = injectorText.match(
+    /(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*getvar\(\s*(['"])stat_data\.([^'"]+)\2/i,
+  );
+  if (!variableMatch) return null;
+
+  const variableName = variableMatch[1];
+  const thresholdMatch = injectorText.match(new RegExp(`${escapeRegExp(variableName)}\\s*>=\\s*(-?\\d+(?:\\.\\d+)?)`));
+  if (!thresholdMatch) return null;
+  const activationMin = Number(thresholdMatch[1]);
+  const activationPath = variableMatch[3].split(".").map((part) => part.trim()).filter(Boolean);
+  if (!Number.isFinite(activationMin) || activationPath.length === 0) return null;
+
+  return { promptText, activationPath, activationMin };
+}
+
 export function decodeCharacterCard(payload: unknown, avatar: string): CharacterCardDetails {
   const items = Array.isArray(payload) ? payload : [];
   const item = items.find((entry: any) => entry?.avatar === avatar);
@@ -137,6 +198,7 @@ export function decodeCharacterCard(payload: unknown, avatar: string): Character
     firstMes: typeof item.first_mes === "string" ? item.first_mes : (typeof data?.first_mes === "string" ? data.first_mes : ""),
     mesExample: typeof item.mes_example === "string" ? item.mes_example : (typeof data?.mes_example === "string" ? data.mes_example : ""),
     mvu: decodeMvuCardConfig(item),
+    xuanxiang: decodeXuanxiangCardConfig(item),
   };
 }
 

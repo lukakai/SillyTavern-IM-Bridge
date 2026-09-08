@@ -12,6 +12,14 @@ import type {
   RecentSession,
 } from "../../core/models/index";
 import { timestampToMillis } from "../../infra/st/st-chat-mapper";
+import {
+  createXuanxiangState,
+  extractXuanxiang,
+  renderXuanxiangPanel,
+  type XuanxiangInteractionState,
+  type XuanxiangOption,
+  type XuanxiangPanel,
+} from "./xuanxiang";
 
 function formatDateTime(value: string | number | null): string {
   const timestamp = timestampToMillis(value);
@@ -196,6 +204,12 @@ export interface TelegramResponseRender {
   text: string;
   entities: MessageEntity[];
   keyboard: InlineKeyboard | null;
+  xuanxiang: (XuanxiangPanel & { options: XuanxiangOption[] }) | null;
+}
+
+export interface TelegramResponseRenderOptions {
+  xuanxiangCallbackId?: string | null;
+  xuanxiangState?: XuanxiangInteractionState;
 }
 
 export interface TelegramMessagePart {
@@ -211,7 +225,7 @@ interface ThoughtPlaceholderResult {
 function extractThoughtPlaceholders(rawText: string): ThoughtPlaceholderResult {
   const thoughts: string[] = [];
   let text = rawText
-    .replace(/\\(?=<!--|<\/?(?:content|branches|details|summary|think|thinking)\b)/gi, "")
+    .replace(/\\(?=<!--|<\/?(?:content|branches|details|summary|think|thinking|xuanxiang)\b)/gi, "")
     .replace(/^\\(?=#{1,6}\s*(?:正文|content)\s*$)/gim, "");
   const stash = (content: string): string => {
     const cleaned = content.trim();
@@ -406,7 +420,11 @@ function appendMvuStatus(
 }
 
 /** Converts SillyTavern branch markup into Telegram text and inline choice buttons. */
-export function renderTelegramResponse(rawText: string, mvuStatus: MvuStatusSnapshot | null = null): TelegramResponseRender {
+export function renderTelegramResponse(
+  rawText: string,
+  mvuStatus: MvuStatusSnapshot | null = null,
+  options: TelegramResponseRenderOptions = {},
+): TelegramResponseRender {
   const extracted = extractThoughtPlaceholders(rawText);
   let text = extracted.text
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, "")
@@ -419,6 +437,8 @@ export function renderTelegramResponse(rawText: string, mvuStatus: MvuStatusSnap
     .replace(/^\s*#{1,6}\s*(?:正文|content)\s*$/gim, "")
     .replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, "\n\n")
     .trim();
+  const xuanxiangExtraction = extractXuanxiang(text);
+  text = xuanxiangExtraction.text;
   const branchPattern = /<branches\b[^>]*>([\s\S]*?)<\/branches>/i;
   const match = branchPattern.exec(text);
   let keyboard: InlineKeyboard | null = null;
@@ -451,7 +471,17 @@ export function renderTelegramResponse(rawText: string, mvuStatus: MvuStatusSnap
 
   const materialized = materializeThoughts(text, extracted.thoughts);
   const withMvu = appendMvuStatus(materialized.text, materialized.entities, mvuStatus);
-  return { text: withMvu.text, entities: withMvu.entities, keyboard };
+  const xuanxiang = xuanxiangExtraction.options
+    ? {
+      ...renderXuanxiangPanel(
+        xuanxiangExtraction.options,
+        options.xuanxiangState ?? createXuanxiangState(),
+        options.xuanxiangCallbackId ?? null,
+      ),
+      options: xuanxiangExtraction.options,
+    }
+    : null;
+  return { text: withMvu.text, entities: withMvu.entities, keyboard, xuanxiang };
 }
 
 export function splitTelegramResponse(rendered: TelegramResponseRender, maxLength = 3500): TelegramMessagePart[] {

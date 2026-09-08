@@ -49,6 +49,12 @@ export interface MvuStatusSnapshot {
   rangeHints: Record<string, MvuRangeHint>;
 }
 
+export interface XuanxiangCardConfig {
+  promptText: string;
+  activationPath: string[] | null;
+  activationMin: number | null;
+}
+
 export interface LatestDialogueRecord {
   messageId: string;
   turnId: string | null;
@@ -87,4 +93,5 @@ export interface CharacterCardDetails {
   firstMes: string;
   mesExample: string;
   mvu: MvuCardConfig | null;
+  xuanxiang: XuanxiangCardConfig | null;
 }

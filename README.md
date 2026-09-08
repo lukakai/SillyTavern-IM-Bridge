@@ -11,6 +11,8 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 - 自动把角色回复里的 `<branches>` A–J 选项渲染成 Telegram 内联按钮；点击按钮会把所选字母作为下一条用户消息发送到当前会话。
 - 自动识别 Subtext think、`<think>` 和 `<thinking>` 思考区，在 Telegram 中显示为默认折叠、点击可展开的引用；同时清理残留的思考标签和内部 HTML 注释。
 - 自动识别使用 `stat_data` 与 `<UpdateVariable>/<JSONPatch>` 的 MVU 角色卡：读取当前 swipe 的变量快照，在服务端安全应用 `replace`、`delta`、`insert`、`remove`、`move`，写回聊天记录，并在 Telegram 中显示通用折叠状态卡。普通角色卡自动跳过，不执行卡内 JavaScript。
+- 支持角色回复中的 `<xuanxiang>` 特殊选项栏：将 `normal`、`deleted`、`modified`、`hidden`、`forced`、`blink`、`urgent`、`mystery` 转成 Telegram 多阶段按钮，并发送角色卡要求的完整选择标记。`urgent` 仅显示原倒计时秒数，不会自动代选；解锁、揭晓和选择状态持久化在 `turn_records` 中。仅对含有效标签的回复启用，其他角色卡不受影响。
+- 对使用 EJS 动态注入选项规则的角色卡，只解析明确的 `选项栏输出规范` 引用、MVU 状态路径和数值门槛；不会执行角色卡中的 EJS/JavaScript。当前状态未达到门槛时不会注入相关规则。
 
 ## 安装
 

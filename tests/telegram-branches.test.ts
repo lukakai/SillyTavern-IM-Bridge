@@ -40,6 +40,27 @@ describe("renderTelegramResponse", () => {
     expect(rendered.text).toBe("普通回复");
     expect(rendered.entities).toEqual([]);
     expect(rendered.keyboard).toBeNull();
+    expect(rendered.xuanxiang).toBeNull();
+  });
+
+  it("moves a valid xuanxiang block into a dedicated Telegram option panel", () => {
+    const rendered = renderTelegramResponse([
+      "正文前半段。",
+      "<xuanxiang>",
+      "[A|normal|继续聊天]",
+      "[B|urgent|马上离开|10|快点选]",
+      "</xuanxiang>",
+      "正文后半段。",
+    ].join("\n"), null, { xuanxiangCallbackId: "12" });
+
+    expect(rendered.text).toBe("正文前半段。\n\n正文后半段。");
+    expect(rendered.text).not.toContain("xuanxiang");
+    expect(rendered.xuanxiang?.text).toContain("🎼 指尖余音");
+    expect(rendered.xuanxiang?.text).toContain("TG 中不限时");
+    expect(rendered.xuanxiang?.keyboard?.inline_keyboard.flat()).toContainEqual({
+      text: "A · 选择",
+      callback_data: "xq:12:A:s",
+    });
   });
 
   it("hides MVU maintenance markup and appends a native expandable status card", () => {

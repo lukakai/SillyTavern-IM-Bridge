@@ -17,6 +17,7 @@ import {
   processMvuReply,
   type MvuReplyResult,
 } from "./mvu-service";
+import { createXuanxiangTurnPrompt } from "./xuanxiang-service";
 
 function substitutePlaceholders(input: string, characterName: string, userName: string): string {
   return input
@@ -225,10 +226,12 @@ export class ConversationService {
     }
 
     const mvuContext = createMvuTurnContext(card, chat, settings.username);
+    const xuanxiangPrompt = createXuanxiangTurnPrompt(card, mvuContext, settings.username);
 
     const openAiMessages: Array<{ role: string; content: string; name?: string }> = [
       { role: "system", content: buildSystemPrompt(card, settings) },
       ...(mvuContext?.prompt ? [{ role: "system", content: mvuContext.prompt }] : []),
+      ...(xuanxiangPrompt ? [{ role: "system", content: xuanxiangPrompt }] : []),
       ...toOpenAiMessages(getRecentMessages(chat), settings),
       { role: "user", name: settings.username, content: normalizeModelInputText(params.text) },
     ];
@@ -325,10 +328,12 @@ export class ConversationService {
       }
 
       const mvuContext = createMvuTurnContext(card, chat, settings.username);
+      const xuanxiangPrompt = createXuanxiangTurnPrompt(card, mvuContext, settings.username);
 
       const openAiMessages: Array<{ role: string; content: string; name?: string }> = [
         { role: "system", content: buildSystemPrompt(card, settings) },
         ...(mvuContext?.prompt ? [{ role: "system", content: mvuContext.prompt }] : []),
+        ...(xuanxiangPrompt ? [{ role: "system", content: xuanxiangPrompt }] : []),
         ...toOpenAiMessages(getRecentMessages(chat), settings),
       ];
 

@@ -13,6 +13,7 @@ interface StreamRendererOptions {
   degraded?: boolean;
   progressSingleMessageOnly?: boolean;
   disableProgressWhenDegraded?: boolean;
+  xuanxiangCallbackId?: string | null;
 }
 
 export class StreamRenderer {
@@ -28,6 +29,7 @@ export class StreamRenderer {
   private readonly degraded: boolean;
   private readonly progressSingleMessageOnly: boolean;
   private readonly disableProgressWhenDegraded: boolean;
+  private readonly xuanxiangCallbackId: string | null;
 
   public constructor(
     private readonly ctx: BotContext,
@@ -45,6 +47,7 @@ export class StreamRenderer {
     this.degraded = options.degraded ?? false;
     this.progressSingleMessageOnly = options.progressSingleMessageOnly ?? true;
     this.disableProgressWhenDegraded = options.disableProgressWhenDegraded ?? true;
+    this.xuanxiangCallbackId = options.xuanxiangCallbackId ?? null;
   }
 
   public async onProgress(fullText: string): Promise<void> {
@@ -96,9 +99,26 @@ export class StreamRenderer {
   }
 
   private async renderFinal(fullText: string, mvuStatus: MvuStatusSnapshot | null): Promise<void> {
-    const rendered = renderTelegramResponse(fullText, mvuStatus);
+    const rendered = renderTelegramResponse(fullText, mvuStatus, {
+      xuanxiangCallbackId: this.xuanxiangCallbackId,
+    });
     const parts = splitTelegramResponse(rendered, this.hardChunkSize);
-    await this.applyParts(parts, "critical", true, rendered.keyboard ?? undefined);
+    if (parts.length > 0) {
+      await this.applyParts(parts, "critical", true, rendered.keyboard ?? undefined);
+    }
+    if (rendered.xuanxiang) {
+      const panel = rendered.xuanxiang;
+      if (parts.length === 0) {
+        await this.applyParts([{ text: panel.text }], "critical", true, panel.keyboard ?? undefined);
+      } else {
+        const message = await this.sender.sendText(this.ctx, this.chatId, panel.text, {
+          priority: "critical",
+          replyMarkup: panel.keyboard ?? undefined,
+        });
+        this.messageIds.push(message.message_id);
+        this.sentParts.push(panel.text);
+      }
+    }
     this.lastRenderedText = fullText;
     this.lastCommittedLength = fullText.length;
     this.lastRenderAt = Date.now();

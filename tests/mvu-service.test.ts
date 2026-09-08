@@ -19,6 +19,7 @@ function card(overrides: Partial<CharacterCardDetails> = {}): CharacterCardDetai
     firstMes: "",
     mesExample: "",
     mvu: null,
+    xuanxiang: null,
     ...overrides,
   };
 }

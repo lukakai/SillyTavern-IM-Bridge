@@ -22,6 +22,15 @@ import {
   splitTelegramText,
 } from "./render";
 import { StreamRenderer } from "./stream-renderer";
+import {
+  applyXuanxiangAction,
+  createStoredXuanxiang,
+  decodeStoredXuanxiang,
+  decodeXuanxiangCallback,
+  formatXuanxiangSelection,
+  renderXuanxiangPanel,
+  type StoredXuanxiang,
+} from "./xuanxiang";
 
 type BotContext = Context;
 
@@ -208,7 +217,13 @@ async function replyLongText(ctx: BotContext, botCtx: BotInstanceContext, text: 
   }
 }
 
-function createStreamRenderer(ctx: BotContext, deps: AppServices, botCtx: BotInstanceContext, initialMessageId: number): StreamRenderer {
+function createStreamRenderer(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  initialMessageId: number,
+  xuanxiangCallbackId: number | null = null,
+): StreamRenderer {
   const chatId = ctx.chat?.id;
   if (!chatId) {
     throw new Error("Telegram chat id missing");
@@ -223,6 +238,7 @@ function createStreamRenderer(ctx: BotContext, deps: AppServices, botCtx: BotIns
     degraded,
     progressSingleMessageOnly: botCtx.config.tgStreamProgressSingleMessageOnly,
     disableProgressWhenDegraded: botCtx.config.tgDisableProgressWhenDegraded,
+    xuanxiangCallbackId: xuanxiangCallbackId ? String(xuanxiangCallbackId) : null,
   });
 }
 
@@ -287,7 +303,7 @@ async function sendConversationText(
     }
 
     const placeholder = await replyText(ctx, botCtx, "已收到，正在继续当前会话。");
-    const streamRenderer = createStreamRenderer(ctx, deps, botCtx, placeholder.message_id);
+    const streamRenderer = createStreamRenderer(ctx, deps, botCtx, placeholder.message_id, turnRecordId);
     const result = await deps.conversationService.sendMessageStream({
       accountId,
       avatar: state.activeCharacterAvatar!,
@@ -302,6 +318,16 @@ async function sendConversationText(
       },
     });
 
+    const xuanxiang = createStoredXuanxiang(result.replyText);
+    if (turnRecordId) {
+      const pendingTurn = deps.repositories.turnRepository.getTurnRecordById(turnRecordId);
+      if (pendingTurn) {
+        deps.repositories.turnRepository.updateTurnExternalRefs(turnRecordId, {
+          ...pendingTurn.externalRefs,
+          xuanxiang,
+        });
+      }
+    }
     await streamRenderer.onDone(result.replyText, result.mvuStatus);
 
     if (turnRecordId && ctx.chat?.id) {
@@ -317,6 +343,8 @@ async function sendConversationText(
           chatFile: state.activeChatFile,
           latestMessageId: result.latestRecord?.messageId ?? null,
           latestTurnId: result.latestRecord?.turnId ?? null,
+          xuanxiang,
+          xuanxiangMessageId: xuanxiang ? streamRenderer.getMessageIds().at(-1) ?? null : null,
         },
       });
     }
@@ -719,7 +747,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
         placeholderMessageId = placeholder.message_id;
       }
 
-      const streamRenderer = createStreamRenderer(ctx, deps, botCtx, placeholderMessageId);
+      const streamRenderer = createStreamRenderer(ctx, deps, botCtx, placeholderMessageId, latestTurn?.id ?? null);
       const result = await deps.chatEditService.regenerateLastReply({
         accountId,
         avatar: state.activeCharacterAvatar!,
@@ -733,6 +761,13 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
         },
       });
 
+      const xuanxiang = createStoredXuanxiang(result.replyText);
+      if (latestTurn) {
+        deps.repositories.turnRepository.updateTurnExternalRefs(latestTurn.id, {
+          ...latestTurn.externalRefs,
+          xuanxiang,
+        });
+      }
       await streamRenderer.onDone(result.replyText, result.mvuStatus);
 
       if (latestTurn) {
@@ -747,6 +782,8 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
             botMessageIds: streamRenderer.getMessageIds(),
             latestMessageId: result.latestRecord?.messageId ?? null,
             latestTurnId: result.latestRecord?.turnId ?? null,
+            xuanxiang,
+            xuanxiangMessageId: xuanxiang ? streamRenderer.getMessageIds().at(-1) ?? null : null,
           },
         });
       }
@@ -897,6 +934,89 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
 
     const accountId = getAccountId(userId, deps, botCtx);
     const data = ctx.callbackQuery.data;
+
+    if (data.startsWith("xq:")) {
+      const callback = decodeXuanxiangCallback(data);
+      const callbackMessageId = ctx.callbackQuery.message?.message_id;
+      const chatId = ctx.chat?.id;
+      if (!callback || !callbackMessageId || !chatId) {
+        await ctx.answerCallbackQuery({ text: "这个选项已经失效" });
+        return;
+      }
+
+      const turn = deps.repositories.turnRepository.getTurnRecordById(callback.recordId);
+      const active = deps.sessionService.getActiveSession(accountId);
+      const activeSessionKey = active?.activeCharacterAvatar && active.activeChatFile
+        ? buildSessionKey(active.activeCharacterAvatar, active.activeChatFile)
+        : null;
+      const latestTurn = activeSessionKey
+        ? getLatestTelegramTurn(deps, accountId, String(chatId), active!.activeCharacterAvatar!, active!.activeChatFile!)
+        : null;
+      const stored = decodeStoredXuanxiang(turn?.externalRefs.xuanxiang);
+      const expectedMessageId = Number(turn?.externalRefs.xuanxiangMessageId ?? 0);
+
+      if (
+        !turn
+        || turn.accountId !== accountId
+        || turn.channel !== "telegram"
+        || turn.status !== "completed"
+        || turn.revokedAt
+        || turn.sessionKey !== activeSessionKey
+        || String(turn.externalRefs.chatId ?? "") !== String(chatId)
+        || latestTurn?.id !== turn.id
+        || expectedMessageId !== callbackMessageId
+        || !stored
+      ) {
+        await ctx.answerCallbackQuery({ text: "这个选项已失效，请使用当前会话的最新选项" });
+        return;
+      }
+
+      let actionResult;
+      try {
+        actionResult = applyXuanxiangAction(stored.options, stored.state, callback.letter, callback.action);
+      } catch (error) {
+        await ctx.answerCallbackQuery({ text: error instanceof Error ? error.message : "无法处理这个选项" });
+        return;
+      }
+
+      const updated: StoredXuanxiang = {
+        ...stored,
+        state: actionResult.state,
+      };
+      deps.repositories.turnRepository.updateTurnExternalRefs(turn.id, {
+        ...turn.externalRefs,
+        xuanxiang: updated,
+      });
+      const panel = renderXuanxiangPanel(updated.options, updated.state, String(turn.id));
+      await ctx.answerCallbackQuery({ text: actionResult.notice });
+      try {
+        await botCtx.sender.editText(ctx, chatId, callbackMessageId, panel.text, {
+          priority: "critical",
+          replyMarkup: panel.keyboard ?? { inline_keyboard: [] },
+        });
+      } catch {
+        // Persisted state remains authoritative even if Telegram cannot update an old message.
+      }
+
+      if (actionResult.selected) {
+        const marker = formatXuanxiangSelection(actionResult.selected);
+        const selectionMessage = await replyText(
+          ctx,
+          botCtx,
+          `你选择了：${actionResult.selected.letter} - ${actionResult.selected.selectionText}`,
+        );
+        await sendConversationText(
+          ctx,
+          deps,
+          botCtx,
+          userId,
+          marker,
+          `xuanxiang:${turn.id}:${actionResult.selected.letter}`,
+          selectionMessage.message_id,
+        );
+      }
+      return;
+    }
 
     if (data.startsWith("branch:")) {
       const choice = data.slice("branch:".length).trim().toUpperCase();
