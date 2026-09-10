@@ -23,6 +23,10 @@ export interface SendMessageResult {
   mvuStatus: MvuStatusSnapshot | null;
 }
 
+export interface GeneratedReplyCandidate extends SendMessageResult {
+  assistantMessage: import("./chat").ChatMessage;
+}
+
 export type StreamEvent =
   | { type: "started"; sessionKey: string }
   | { type: "delta"; text: string; fullText: string }

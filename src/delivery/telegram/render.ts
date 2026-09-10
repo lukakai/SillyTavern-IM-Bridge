@@ -522,7 +522,7 @@ export function renderHelp(): string {
     "/new - 基于当前角色新建会话",
     "/now - 查看当前会话",
     "/last - 查看最后一轮",
-    "/redo - 重生成回复",
+    "/redo - 重新生成当前回复",
     "/undo - 删除最后一轮",
     "/revoke - 撤回上一轮（TG + ST）",
     "/recent - 查看最近使用的会话",
@@ -530,6 +530,9 @@ export function renderHelp(): string {
     "/cmodel - 查看并切换压缩专用模型",
     "/compress - 压缩当前会话历史（保留最近 15 条）",
     "/help - 查看帮助",
+    "",
+    "角色回复下方可按需重新生成、添加备选，并用左右按钮切换。",
+    "编辑最新一条 Telegram 用户消息会同步到 ST，但不会自动生成；随后再点回复下方按钮。",
     "",
     "兼容长命令：/characters /history /current。",
   ].join("\n");

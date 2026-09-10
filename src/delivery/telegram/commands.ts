@@ -8,7 +8,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "new", description: "新建会话" },
   { command: "now", description: "查看当前会话" },
   { command: "last", description: "查看最后一轮" },
-  { command: "redo", description: "重生成回复" },
+  { command: "redo", description: "重新生成当前回复" },
   { command: "undo", description: "删除最后一轮" },
   { command: "revoke", description: "撤回上一轮(TG+ST)" },
   { command: "model", description: "切换模型" },

@@ -13,6 +13,8 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 - 自动识别使用 `stat_data` 与 `<UpdateVariable>/<JSONPatch>` 的 MVU 角色卡：读取当前 swipe 的变量快照，在服务端安全应用 `replace`、`delta`、`insert`、`remove`、`move`，写回聊天记录，并在 Telegram 中显示通用折叠状态卡。普通角色卡自动跳过，不执行卡内 JavaScript。
 - 支持角色回复中的 `<xuanxiang>` 特殊选项栏：将 `normal`、`deleted`、`modified`、`hidden`、`forced`、`blink`、`urgent`、`mystery` 转成 Telegram 多阶段按钮，并发送角色卡要求的完整选择标记。`urgent` 仅显示原倒计时秒数，不会自动代选；解锁、揭晓和选择状态持久化在 `turn_records` 中。仅对含有效标签的回复启用，其他角色卡不受影响。
 - 对使用 EJS 动态注入选项规则的角色卡，只解析明确的 `选项栏输出规范` 引用、MVU 状态路径和数值门槛；不会执行角色卡中的 EJS/JavaScript。当前状态未达到门槛时不会注入相关规则。
+- 每条 Telegram 角色回复提供 SillyTavern Swipe 控件：可按需重新生成当前回复、追加最多 20 条备选，并用左右按钮切换；正文、生成元数据、MVU 快照和 `<xuanxiang>` 交互状态会随所选 Swipe 一起同步回酒馆。普通角色卡同样可用。
+- 支持编辑当前会话最新一轮的 Telegram 用户消息。编辑只同步到 SillyTavern 并保留当前回复，不会立即调用模型；随后点击“重新生成”或“生成备选”时，模型会使用编辑后的内容。更早的 Telegram 消息会被拒绝，避免历史定位和状态错位。
 
 ## 安装
 

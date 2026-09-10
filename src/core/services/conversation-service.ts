@@ -1,6 +1,7 @@
 ﻿import type {
   CharacterCardDetails,
   ChatMessage,
+  GeneratedReplyCandidate,
   SendMessageResult,
   StreamEvent,
   StGenerationSettings,
@@ -295,6 +296,24 @@ export class ConversationService {
     });
   }
 
+  /** Generates an assistant candidate from a caller-provided chat without saving it. */
+  public async generateReplyCandidateStreamWithinLock(params: {
+    accountId: string;
+    avatar: string;
+    characterName: string;
+    chatFile: string;
+    modelOverride?: string | null;
+    prefetchedChat: ChatMessage[];
+    onProgress?: (event: StreamEvent) => Promise<void> | void;
+  }): Promise<GeneratedReplyCandidate> {
+    return this.runStream({
+      ...params,
+      text: "",
+      includeUserMessage: false,
+      persistChat: false,
+    });
+  }
+
   private async runStream(params: {
     accountId: string;
     avatar: string;
@@ -303,9 +322,10 @@ export class ConversationService {
     text: string;
     modelOverride?: string | null;
     includeUserMessage: boolean;
+    persistChat?: boolean;
     prefetchedChat?: ChatMessage[];
     onProgress?: (event: StreamEvent) => Promise<void> | void;
-  }): Promise<SendMessageResult> {
+  }): Promise<GeneratedReplyCandidate> {
     const sessionKey = buildSessionKey(params.avatar, params.chatFile);
     let previousText = "";
 
@@ -362,21 +382,25 @@ export class ConversationService {
       const replyText = normalizeAssistantReply(params.characterName, extractAssistantReply(generated));
       const mvu = processMvuReply(replyText, mvuContext);
       logMvuError(mvu);
+      const assistantMessage = buildAssistantMessage(params.characterName, replyText, mvu);
       const updatedChat = params.includeUserMessage
-        ? [...chat, buildUserMessage(settings.username, params.text), buildAssistantMessage(params.characterName, replyText, mvu)]
-        : [...chat, buildAssistantMessage(params.characterName, replyText, mvu)];
+        ? [...chat, buildUserMessage(settings.username, params.text), assistantMessage]
+        : [...chat, assistantMessage];
 
-      await this.stClient.saveChat({
-        avatar: params.avatar,
-        characterName: params.characterName,
-        chatFile: params.chatFile,
-        chat: updatedChat,
-      });
+      if (params.persistChat !== false) {
+        await this.stClient.saveChat({
+          avatar: params.avatar,
+          characterName: params.characterName,
+          chatFile: params.chatFile,
+          chat: updatedChat,
+        });
+      }
 
       const result = {
         replyText,
         latestRecord: pickLatestDialogueRecord(params.avatar, params.chatFile, updatedChat),
         mvuStatus: mvu?.status ?? null,
+        assistantMessage,
       };
 
       await params.onProgress?.({

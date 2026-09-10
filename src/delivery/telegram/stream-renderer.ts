@@ -2,6 +2,7 @@
 import type { MvuStatusSnapshot } from "../../core/models/index";
 import { renderTelegramResponse, splitTelegramResponse, splitTelegramText, type TelegramMessagePart } from "./render";
 import { TelegramSender } from "./telegram-sender";
+import { combineInlineKeyboards, renderSwipeKeyboard } from "./swipe";
 
 type BotContext = Context;
 
@@ -14,6 +15,8 @@ interface StreamRendererOptions {
   progressSingleMessageOnly?: boolean;
   disableProgressWhenDegraded?: boolean;
   xuanxiangCallbackId?: string | null;
+  swipeIndex?: number;
+  swipeCount?: number;
 }
 
 export class StreamRenderer {
@@ -30,6 +33,10 @@ export class StreamRenderer {
   private readonly progressSingleMessageOnly: boolean;
   private readonly disableProgressWhenDegraded: boolean;
   private readonly xuanxiangCallbackId: string | null;
+  private readonly swipeIndex: number;
+  private readonly swipeCount: number;
+  private swipeControlMessageId: number | null = null;
+  private xuanxiangMessageId: number | null = null;
 
   public constructor(
     private readonly ctx: BotContext,
@@ -48,6 +55,8 @@ export class StreamRenderer {
     this.progressSingleMessageOnly = options.progressSingleMessageOnly ?? true;
     this.disableProgressWhenDegraded = options.disableProgressWhenDegraded ?? true;
     this.xuanxiangCallbackId = options.xuanxiangCallbackId ?? null;
+    this.swipeIndex = options.swipeIndex ?? 0;
+    this.swipeCount = options.swipeCount ?? 1;
   }
 
   public async onProgress(fullText: string): Promise<void> {
@@ -85,6 +94,14 @@ export class StreamRenderer {
     return [...this.messageIds];
   }
 
+  public getSwipeControlMessageId(): number | null {
+    return this.swipeControlMessageId;
+  }
+
+  public getXuanxiangMessageId(): number | null {
+    return this.xuanxiangMessageId;
+  }
+
   private async renderProgress(fullText: string): Promise<void> {
     if (fullText === this.lastRenderedText) {
       return;
@@ -102,14 +119,25 @@ export class StreamRenderer {
     const rendered = renderTelegramResponse(fullText, mvuStatus, {
       xuanxiangCallbackId: this.xuanxiangCallbackId,
     });
+    const swipeKeyboard = this.xuanxiangCallbackId
+      ? renderSwipeKeyboard(this.xuanxiangCallbackId, this.swipeIndex, this.swipeCount)
+      : undefined;
     const parts = splitTelegramResponse(rendered, this.hardChunkSize);
     if (parts.length > 0) {
-      await this.applyParts(parts, "critical", true, rendered.keyboard ?? undefined);
+      await this.applyParts(parts, "critical", true, combineInlineKeyboards(rendered.keyboard, swipeKeyboard));
+      this.swipeControlMessageId = this.messageIds[parts.length - 1] ?? null;
     }
     if (rendered.xuanxiang) {
       const panel = rendered.xuanxiang;
       if (parts.length === 0) {
-        await this.applyParts([{ text: panel.text }], "critical", true, panel.keyboard ?? undefined);
+        await this.applyParts(
+          [{ text: panel.text }],
+          "critical",
+          true,
+          combineInlineKeyboards(panel.keyboard, swipeKeyboard),
+        );
+        this.swipeControlMessageId = this.messageIds[0] ?? null;
+        this.xuanxiangMessageId = this.messageIds[0] ?? null;
       } else {
         const message = await this.sender.sendText(this.ctx, this.chatId, panel.text, {
           priority: "critical",
@@ -117,6 +145,7 @@ export class StreamRenderer {
         });
         this.messageIds.push(message.message_id);
         this.sentParts.push(panel.text);
+        this.xuanxiangMessageId = message.message_id;
       }
     }
     this.lastRenderedText = fullText;

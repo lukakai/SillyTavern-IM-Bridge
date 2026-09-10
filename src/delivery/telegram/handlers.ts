@@ -18,10 +18,18 @@ import {
   renderProviderModelPage,
   renderProviderPage,
   renderRecentSessionsPage,
+  renderTelegramResponse,
   renderUndoResult,
+  splitTelegramResponse,
   splitTelegramText,
 } from "./render";
 import { StreamRenderer } from "./stream-renderer";
+import {
+  combineInlineKeyboards,
+  decodeSwipeCallback,
+  renderSwipeKeyboard,
+  type TelegramSwipeAction,
+} from "./swipe";
 import {
   applyXuanxiangAction,
   createStoredXuanxiang,
@@ -223,6 +231,8 @@ function createStreamRenderer(
   botCtx: BotInstanceContext,
   initialMessageId: number,
   xuanxiangCallbackId: number | null = null,
+  swipeIndex = 0,
+  swipeCount = 1,
 ): StreamRenderer {
   const chatId = ctx.chat?.id;
   if (!chatId) {
@@ -239,6 +249,8 @@ function createStreamRenderer(
     progressSingleMessageOnly: botCtx.config.tgStreamProgressSingleMessageOnly,
     disableProgressWhenDegraded: botCtx.config.tgDisableProgressWhenDegraded,
     xuanxiangCallbackId: xuanxiangCallbackId ? String(xuanxiangCallbackId) : null,
+    swipeIndex,
+    swipeCount,
   });
 }
 
@@ -263,6 +275,112 @@ function getLatestTelegramTurn(deps: AppServices, accountId: string, chatId: str
       chatId,
     },
   });
+}
+
+function numericMessageIds(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value.map(Number).filter((item) => Number.isInteger(item) && item > 0)
+    : [];
+}
+
+async function deleteMessagesBestEffort(
+  ctx: BotContext,
+  botCtx: BotInstanceContext,
+  chatId: string | number,
+  messageIds: number[],
+): Promise<void> {
+  for (const messageId of [...messageIds].reverse()) {
+    try {
+      await botCtx.sender.deleteMessage(ctx, chatId, messageId, "normal");
+    } catch {
+      // A stale progress message is preferable to losing the completed ST mutation.
+    }
+  }
+}
+
+function storedXuanxiangBySwipe(
+  externalRefs: Record<string, unknown>,
+  swipeIndex: number,
+  swipeCount: number,
+): Array<StoredXuanxiang | null> {
+  const source = Array.isArray(externalRefs.xuanxiangBySwipe) ? externalRefs.xuanxiangBySwipe : [];
+  const result = Array.from({ length: swipeCount }, (_, index) => decodeStoredXuanxiang(source[index]));
+  if (!result[swipeIndex]) result[swipeIndex] = decodeStoredXuanxiang(externalRefs.xuanxiang);
+  return result;
+}
+
+async function renderSelectedSwipe(params: {
+  ctx: BotContext;
+  botCtx: BotInstanceContext;
+  chatId: number;
+  recordId: number;
+  existingMessageIds: number[];
+  replyText: string;
+  mvuStatus: import("../../core/models/index").MvuStatusSnapshot | null;
+  swipeIndex: number;
+  swipeCount: number;
+  xuanxiang: StoredXuanxiang | null;
+}): Promise<{
+  messageIds: number[];
+  swipeControlMessageId: number;
+  xuanxiangMessageId: number | null;
+}> {
+  const rendered = renderTelegramResponse(params.replyText, params.mvuStatus, {
+    xuanxiangCallbackId: String(params.recordId),
+    xuanxiangState: params.xuanxiang?.state,
+  });
+  const bodyParts = splitTelegramResponse(rendered, params.botCtx.config.tgStreamHardChunkSize);
+  if (bodyParts.length === 0) bodyParts.push({ text: "角色回复包含可交互选项，请在下方选择。" });
+  const swipeKeyboard = renderSwipeKeyboard(params.recordId, params.swipeIndex, params.swipeCount);
+  const desired = bodyParts.map((part, index) => ({
+    text: part.text,
+    entities: part.entities,
+    replyMarkup: index === bodyParts.length - 1
+      ? combineInlineKeyboards(rendered.keyboard, swipeKeyboard)
+      : undefined,
+    xuanxiang: false,
+  }));
+  if (rendered.xuanxiang) {
+    desired.push({
+      text: rendered.xuanxiang.text,
+      entities: undefined,
+      replyMarkup: rendered.xuanxiang.keyboard ?? undefined,
+      xuanxiang: true,
+    });
+  }
+
+  const messageIds: number[] = [];
+  for (let index = 0; index < desired.length; index += 1) {
+    const part = desired[index];
+    const existingId = params.existingMessageIds[index];
+    if (existingId) {
+      await params.botCtx.sender.editText(params.ctx, params.chatId, existingId, part.text, {
+        priority: "critical",
+        replyMarkup: part.replyMarkup ?? { inline_keyboard: [] },
+        entities: part.entities,
+      });
+      messageIds.push(existingId);
+    } else {
+      const sent = await params.botCtx.sender.sendText(params.ctx, params.chatId, part.text, {
+        priority: "critical",
+        replyMarkup: part.replyMarkup,
+        entities: part.entities,
+      });
+      messageIds.push(sent.message_id);
+    }
+  }
+  await deleteMessagesBestEffort(
+    params.ctx,
+    params.botCtx,
+    params.chatId,
+    params.existingMessageIds.slice(desired.length),
+  );
+
+  return {
+    messageIds,
+    swipeControlMessageId: messageIds[bodyParts.length - 1],
+    xuanxiangMessageId: rendered.xuanxiang ? messageIds.at(-1) ?? null : null,
+  };
 }
 
 async function sendConversationText(
@@ -344,7 +462,11 @@ async function sendConversationText(
           latestMessageId: result.latestRecord?.messageId ?? null,
           latestTurnId: result.latestRecord?.turnId ?? null,
           xuanxiang,
-          xuanxiangMessageId: xuanxiang ? streamRenderer.getMessageIds().at(-1) ?? null : null,
+          xuanxiangBySwipe: [xuanxiang],
+          xuanxiangMessageId: streamRenderer.getXuanxiangMessageId(),
+          swipeIndex: 0,
+          swipeCount: 1,
+          swipeControlMessageId: streamRenderer.getSwipeControlMessageId(),
         },
       });
     }
@@ -361,6 +483,10 @@ async function sendConversationText(
 }
 
 export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx: BotInstanceContext): void {
+  const activeSwipeOperations = new Set<string>();
+  const swipeOperationKey = (accountId: string, avatar: string, chatFile: string): string =>
+    `${accountId}:${buildSessionKey(avatar, chatFile)}`;
+
   bot.command("bind", async (ctx) => {
     const userId = getTelegramUserId(ctx);
     if (!userId) return;
@@ -712,93 +838,108 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     const latestTurn = state.chatId
       ? getLatestTelegramTurn(deps, accountId, state.chatId, state.activeCharacterAvatar!, state.activeChatFile!)
       : null;
+    const operationKey = swipeOperationKey(accountId, state.activeCharacterAvatar!, state.activeChatFile!);
+    if (activeSwipeOperations.has(operationKey)) {
+      await replyText(ctx, botCtx, "当前回复正在处理，请完成后再试。", { priority: "critical" });
+      return;
+    }
+    activeSwipeOperations.add(operationKey);
+
     const requestId = createRequestId();
     const traceId = requestId;
-
-    const existingBotMessageIds = Array.isArray(latestTurn?.externalRefs.botMessageIds)
-      ? (latestTurn!.externalRefs.botMessageIds as unknown[]).map((item) => Number(item)).filter((item) => Number.isInteger(item))
-      : [];
+    const progressChatId = ctx.chat?.id ?? null;
+    let progress: StreamRenderer | null = null;
 
     try {
-      if (latestTurn) {
-        deps.repositories.turnRepository.updateTurnRecord(latestTurn.id, {
-          requestId,
-          traceId,
-          operation: "telegram_redo_stream",
-          status: "started",
-          errorMessage: null,
+      if (!latestTurn || !ctx.chat?.id) {
+        const placeholder = await replyText(ctx, botCtx, "正在重新生成回复…");
+        progress = createStreamRenderer(ctx, deps, botCtx, placeholder.message_id);
+        const result = await deps.chatEditService.regenerateLastReply({
+          accountId,
+          avatar: state.activeCharacterAvatar!,
+          characterName: state.activeCharacterName!,
+          chatFile: state.activeChatFile!,
+          modelOverride: state.activeModelOverride,
+          onProgress: async (event) => {
+            if (event.type === "delta") await progress!.onProgress(event.fullText);
+          },
         });
+        await progress.onDone(result.replyText, result.mvuStatus);
+        return;
       }
 
-      let placeholderMessageId: number;
-      if (existingBotMessageIds.length > 0 && ctx.chat?.id) {
-        const chatId = ctx.chat.id;
-        await botCtx.sender.editText(ctx, chatId, existingBotMessageIds[0], "正在重回复中", { priority: "critical" });
-        for (const extraId of existingBotMessageIds.slice(1).reverse()) {
-          try {
-            await botCtx.sender.deleteMessage(ctx, chatId, extraId, "normal");
-          } catch {
-            // ignore cleanup failures
-          }
-        }
-        placeholderMessageId = existingBotMessageIds[0];
-      } else {
-        const placeholder = await replyText(ctx, botCtx, "正在重回复中");
-        placeholderMessageId = placeholder.message_id;
-      }
-
-      const streamRenderer = createStreamRenderer(ctx, deps, botCtx, placeholderMessageId, latestTurn?.id ?? null);
-      const result = await deps.chatEditService.regenerateLastReply({
+      deps.repositories.turnRepository.updateTurnRecord(latestTurn.id, {
+        requestId,
+        traceId,
+        operation: "telegram_redo_stream",
+        status: "started",
+        errorMessage: null,
+      });
+      const placeholder = await replyText(ctx, botCtx, "正在重新生成当前回复…", { priority: "critical" });
+      progress = createStreamRenderer(ctx, deps, botCtx, placeholder.message_id);
+      const result = await deps.chatEditService.replaceLastReplySwipe({
         accountId,
         avatar: state.activeCharacterAvatar!,
         characterName: state.activeCharacterName!,
         chatFile: state.activeChatFile!,
         modelOverride: state.activeModelOverride,
         onProgress: async (event) => {
-          if (event.type === "delta") {
-            await streamRenderer.onProgress(event.fullText);
-          }
+          if (event.type === "delta") await progress!.onProgress(event.fullText);
         },
       });
-
+      await deleteMessagesBestEffort(ctx, botCtx, ctx.chat.id, progress.getMessageIds());
+      const oldIndex = Number(latestTurn.externalRefs.swipeIndex ?? 0);
+      const bySwipe = storedXuanxiangBySwipe(latestTurn.externalRefs, oldIndex, result.swipeCount);
       const xuanxiang = createStoredXuanxiang(result.replyText);
-      if (latestTurn) {
-        deps.repositories.turnRepository.updateTurnExternalRefs(latestTurn.id, {
+      bySwipe[result.swipeIndex] = xuanxiang;
+      const display = await renderSelectedSwipe({
+        ctx,
+        botCtx,
+        chatId: ctx.chat.id,
+        recordId: latestTurn.id,
+        existingMessageIds: numericMessageIds(latestTurn.externalRefs.botMessageIds),
+        replyText: result.replyText,
+        mvuStatus: result.mvuStatus,
+        swipeIndex: result.swipeIndex,
+        swipeCount: result.swipeCount,
+        xuanxiang,
+      });
+      deps.repositories.turnRepository.updateTurnRecord(latestTurn.id, {
+        requestId,
+        traceId,
+        operation: "telegram_redo_stream",
+        status: "completed",
+        errorMessage: null,
+        externalRefs: {
           ...latestTurn.externalRefs,
+          botMessageIds: display.messageIds,
+          latestMessageId: result.latestRecord?.messageId ?? null,
+          latestTurnId: result.latestRecord?.turnId ?? null,
+          swipeIndex: result.swipeIndex,
+          swipeCount: result.swipeCount,
+          swipeControlMessageId: display.swipeControlMessageId,
           xuanxiang,
-        });
+          xuanxiangBySwipe: bySwipe,
+          xuanxiangMessageId: display.xuanxiangMessageId,
+        },
+      });
+    } catch (error) {
+      if (progress && progressChatId) {
+        await deleteMessagesBestEffort(ctx, botCtx, progressChatId, progress.getMessageIds());
       }
-      await streamRenderer.onDone(result.replyText, result.mvuStatus);
-
       if (latestTurn) {
         deps.repositories.turnRepository.updateTurnRecord(latestTurn.id, {
           requestId,
           traceId,
           operation: "telegram_redo_stream",
           status: "completed",
-          errorMessage: null,
-          externalRefs: {
-            ...latestTurn.externalRefs,
-            botMessageIds: streamRenderer.getMessageIds(),
-            latestMessageId: result.latestRecord?.messageId ?? null,
-            latestTurnId: result.latestRecord?.turnId ?? null,
-            xuanxiang,
-            xuanxiangMessageId: xuanxiang ? streamRenderer.getMessageIds().at(-1) ?? null : null,
-          },
-        });
-      }
-    } catch (error) {
-      if (latestTurn) {
-        deps.repositories.turnRepository.updateTurnRecord(latestTurn.id, {
-          requestId,
-          traceId,
-          operation: "telegram_redo_stream",
-          status: "failed",
           errorMessage: error instanceof Error ? error.message : String(error),
         });
       }
       const message = error instanceof Error ? error.message : String(error);
       await replyText(ctx, botCtx, `重生成失败：${message}`, { priority: "critical" });
+    } finally {
+      activeSwipeOperations.delete(operationKey);
     }
   });
 
@@ -935,6 +1076,199 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     const accountId = getAccountId(userId, deps, botCtx);
     const data = ctx.callbackQuery.data;
 
+    if (data.startsWith("sw:")) {
+      const callback = decodeSwipeCallback(data);
+      const callbackMessageId = ctx.callbackQuery.message?.message_id;
+      const chatId = ctx.chat?.id;
+      if (!callback || !callbackMessageId || !chatId) {
+        await ctx.answerCallbackQuery({ text: "这个备选操作已经失效" });
+        return;
+      }
+
+      const turn = deps.repositories.turnRepository.getTurnRecordById(callback.recordId);
+      const active = deps.sessionService.getActiveSession(accountId);
+      const activeSessionKey = active?.activeCharacterAvatar && active.activeChatFile
+        ? buildSessionKey(active.activeCharacterAvatar, active.activeChatFile)
+        : null;
+      const latestTurn = activeSessionKey
+        ? getLatestTelegramTurn(deps, accountId, String(chatId), active!.activeCharacterAvatar!, active!.activeChatFile!)
+        : null;
+      const controlMessageId = Number(turn?.externalRefs.swipeControlMessageId ?? 0);
+      const currentIndex = Number(turn?.externalRefs.swipeIndex ?? 0);
+      const currentCount = Math.max(1, Number(turn?.externalRefs.swipeCount ?? 1));
+
+      if (
+        !turn
+        || turn.accountId !== accountId
+        || turn.channel !== "telegram"
+        || turn.status !== "completed"
+        || turn.revokedAt
+        || turn.sessionKey !== activeSessionKey
+        || String(turn.externalRefs.chatId ?? "") !== String(chatId)
+        || latestTurn?.id !== turn.id
+        || controlMessageId !== callbackMessageId
+        || !Number.isInteger(currentIndex)
+        || currentIndex < 0
+        || currentIndex >= currentCount
+      ) {
+        await ctx.answerCallbackQuery({ text: "这个备选操作已失效，请使用当前会话的最新回复" });
+        return;
+      }
+
+      if (callback.action === "info") {
+        await ctx.answerCallbackQuery({ text: `当前是第 ${currentIndex + 1} / ${currentCount} 条回复` });
+        return;
+      }
+
+      const operationKey = swipeOperationKey(accountId, active!.activeCharacterAvatar!, active!.activeChatFile!);
+      if (activeSwipeOperations.has(operationKey)) {
+        await ctx.answerCallbackQuery({ text: "当前回复正在处理，请稍后再点" });
+        return;
+      }
+      activeSwipeOperations.add(operationKey);
+
+      if (callback.action === "previous" || callback.action === "next") {
+        const targetIndex = callback.action === "previous" ? currentIndex - 1 : currentIndex + 1;
+        if (targetIndex < 0 || targetIndex >= currentCount) {
+          activeSwipeOperations.delete(operationKey);
+          await ctx.answerCallbackQuery({ text: "已经没有更多备选了" });
+          return;
+        }
+        try {
+          await ctx.answerCallbackQuery({ text: `正在切换到第 ${targetIndex + 1} 条回复` });
+          const result = await deps.chatEditService.selectLastReplySwipe({
+            accountId,
+            avatar: active!.activeCharacterAvatar!,
+            characterName: active!.activeCharacterName!,
+            chatFile: active!.activeChatFile!,
+            swipeIndex: targetIndex,
+          });
+          const bySwipe = storedXuanxiangBySwipe(turn.externalRefs, currentIndex, result.swipeCount);
+          const selectedXuanxiang = bySwipe[result.swipeIndex] ?? createStoredXuanxiang(result.replyText);
+          bySwipe[result.swipeIndex] = selectedXuanxiang;
+          const display = await renderSelectedSwipe({
+            ctx,
+            botCtx,
+            chatId,
+            recordId: turn.id,
+            existingMessageIds: numericMessageIds(turn.externalRefs.botMessageIds),
+            replyText: result.replyText,
+            mvuStatus: result.mvuStatus,
+            swipeIndex: result.swipeIndex,
+            swipeCount: result.swipeCount,
+            xuanxiang: selectedXuanxiang,
+          });
+          deps.repositories.turnRepository.updateTurnExternalRefs(turn.id, {
+            ...turn.externalRefs,
+            botMessageIds: display.messageIds,
+            latestMessageId: result.latestRecord?.messageId ?? null,
+            latestTurnId: result.latestRecord?.turnId ?? null,
+            swipeIndex: result.swipeIndex,
+            swipeCount: result.swipeCount,
+            swipeControlMessageId: display.swipeControlMessageId,
+            xuanxiang: selectedXuanxiang,
+            xuanxiangBySwipe: bySwipe,
+            xuanxiangMessageId: display.xuanxiangMessageId,
+          });
+        } catch (error) {
+          await replyText(ctx, botCtx, `切换备选失败：${error instanceof Error ? error.message : String(error)}`, { priority: "critical" });
+        } finally {
+          activeSwipeOperations.delete(operationKey);
+        }
+        return;
+      }
+
+      const action: Extract<TelegramSwipeAction, "add" | "replace"> = callback.action;
+      const requestId = createRequestId();
+      let progress: StreamRenderer | null = null;
+      try {
+        await ctx.answerCallbackQuery({ text: action === "add" ? "正在生成新的备选回复" : "正在重新生成当前回复" });
+        deps.repositories.turnRepository.updateTurnRecord(turn.id, {
+          requestId,
+          traceId: requestId,
+          operation: "telegram_redo_stream",
+          status: "started",
+          errorMessage: null,
+        });
+        const placeholder = await replyText(
+          ctx,
+          botCtx,
+          action === "add" ? "正在生成新的备选回复…" : "正在重新生成当前回复…",
+          { priority: "critical" },
+        );
+        progress = createStreamRenderer(ctx, deps, botCtx, placeholder.message_id);
+        const generate = action === "add"
+          ? deps.chatEditService.appendLastReplySwipe.bind(deps.chatEditService)
+          : deps.chatEditService.replaceLastReplySwipe.bind(deps.chatEditService);
+        const result = await generate({
+          accountId,
+          avatar: active!.activeCharacterAvatar!,
+          characterName: active!.activeCharacterName!,
+          chatFile: active!.activeChatFile!,
+          modelOverride: active!.activeModelOverride,
+          onProgress: async (event) => {
+            if (event.type === "delta") await progress!.onProgress(event.fullText);
+          },
+        });
+        await deleteMessagesBestEffort(ctx, botCtx, chatId, progress.getMessageIds());
+
+        const bySwipe = storedXuanxiangBySwipe(turn.externalRefs, currentIndex, result.swipeCount);
+        const selectedXuanxiang = createStoredXuanxiang(result.replyText);
+        bySwipe[result.swipeIndex] = selectedXuanxiang;
+        const display = await renderSelectedSwipe({
+          ctx,
+          botCtx,
+          chatId,
+          recordId: turn.id,
+          existingMessageIds: numericMessageIds(turn.externalRefs.botMessageIds),
+          replyText: result.replyText,
+          mvuStatus: result.mvuStatus,
+          swipeIndex: result.swipeIndex,
+          swipeCount: result.swipeCount,
+          xuanxiang: selectedXuanxiang,
+        });
+        deps.repositories.turnRepository.updateTurnRecord(turn.id, {
+          requestId,
+          traceId: requestId,
+          operation: "telegram_redo_stream",
+          status: "completed",
+          errorMessage: null,
+          externalRefs: {
+            ...turn.externalRefs,
+            botMessageIds: display.messageIds,
+            latestMessageId: result.latestRecord?.messageId ?? null,
+            latestTurnId: result.latestRecord?.turnId ?? null,
+            swipeIndex: result.swipeIndex,
+            swipeCount: result.swipeCount,
+            swipeControlMessageId: display.swipeControlMessageId,
+            xuanxiang: selectedXuanxiang,
+            xuanxiangBySwipe: bySwipe,
+            xuanxiangMessageId: display.xuanxiangMessageId,
+          },
+        });
+      } catch (error) {
+        if (progress) {
+          await deleteMessagesBestEffort(ctx, botCtx, chatId, progress.getMessageIds());
+        }
+        deps.repositories.turnRepository.updateTurnRecord(turn.id, {
+          requestId,
+          traceId: requestId,
+          operation: "telegram_redo_stream",
+          status: "completed",
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        await replyText(
+          ctx,
+          botCtx,
+          `${action === "add" ? "生成备选" : "重新生成"}失败：${error instanceof Error ? error.message : String(error)}`,
+          { priority: "critical" },
+        );
+      } finally {
+        activeSwipeOperations.delete(operationKey);
+      }
+      return;
+    }
+
     if (data.startsWith("xq:")) {
       const callback = decodeXuanxiangCallback(data);
       const callbackMessageId = ctx.callbackQuery.message?.message_id;
@@ -971,49 +1305,67 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
         return;
       }
 
-      let actionResult;
-      try {
-        actionResult = applyXuanxiangAction(stored.options, stored.state, callback.letter, callback.action);
-      } catch (error) {
-        await ctx.answerCallbackQuery({ text: error instanceof Error ? error.message : "无法处理这个选项" });
+      const operationKey = swipeOperationKey(accountId, active!.activeCharacterAvatar!, active!.activeChatFile!);
+      if (activeSwipeOperations.has(operationKey)) {
+        await ctx.answerCallbackQuery({ text: "当前回复正在处理，请稍后再点" });
         return;
       }
+      activeSwipeOperations.add(operationKey);
 
-      const updated: StoredXuanxiang = {
-        ...stored,
-        state: actionResult.state,
-      };
-      deps.repositories.turnRepository.updateTurnExternalRefs(turn.id, {
-        ...turn.externalRefs,
-        xuanxiang: updated,
-      });
-      const panel = renderXuanxiangPanel(updated.options, updated.state, String(turn.id));
-      await ctx.answerCallbackQuery({ text: actionResult.notice });
       try {
-        await botCtx.sender.editText(ctx, chatId, callbackMessageId, panel.text, {
-          priority: "critical",
-          replyMarkup: panel.keyboard ?? { inline_keyboard: [] },
-        });
-      } catch {
-        // Persisted state remains authoritative even if Telegram cannot update an old message.
-      }
+        let actionResult;
+        try {
+          actionResult = applyXuanxiangAction(stored.options, stored.state, callback.letter, callback.action);
+        } catch (error) {
+          await ctx.answerCallbackQuery({ text: error instanceof Error ? error.message : "无法处理这个选项" });
+          return;
+        }
 
-      if (actionResult.selected) {
-        const marker = formatXuanxiangSelection(actionResult.selected);
-        const selectionMessage = await replyText(
-          ctx,
-          botCtx,
-          `你选择了：${actionResult.selected.letter} - ${actionResult.selected.selectionText}`,
-        );
-        await sendConversationText(
-          ctx,
-          deps,
-          botCtx,
-          userId,
-          marker,
-          `xuanxiang:${turn.id}:${actionResult.selected.letter}`,
-          selectionMessage.message_id,
-        );
+        const updated: StoredXuanxiang = {
+          ...stored,
+          state: actionResult.state,
+        };
+        const swipeIndex = Number(turn.externalRefs.swipeIndex ?? 0);
+        const swipeCount = Math.max(1, Number(turn.externalRefs.swipeCount ?? 1));
+        const bySwipe = storedXuanxiangBySwipe(turn.externalRefs, swipeIndex, swipeCount);
+        if (Number.isInteger(swipeIndex) && swipeIndex >= 0 && swipeIndex < bySwipe.length) {
+          bySwipe[swipeIndex] = updated;
+        }
+        deps.repositories.turnRepository.updateTurnExternalRefs(turn.id, {
+          ...turn.externalRefs,
+          xuanxiang: updated,
+          xuanxiangBySwipe: bySwipe,
+        });
+        const panel = renderXuanxiangPanel(updated.options, updated.state, String(turn.id));
+        await ctx.answerCallbackQuery({ text: actionResult.notice });
+        try {
+          await botCtx.sender.editText(ctx, chatId, callbackMessageId, panel.text, {
+            priority: "critical",
+            replyMarkup: panel.keyboard ?? { inline_keyboard: [] },
+          });
+        } catch {
+          // Persisted state remains authoritative even if Telegram cannot update an old message.
+        }
+
+        if (actionResult.selected) {
+          const marker = formatXuanxiangSelection(actionResult.selected);
+          const selectionMessage = await replyText(
+            ctx,
+            botCtx,
+            `你选择了：${actionResult.selected.letter} - ${actionResult.selected.selectionText}`,
+          );
+          await sendConversationText(
+            ctx,
+            deps,
+            botCtx,
+            userId,
+            marker,
+            `xuanxiang:${turn.id}:${actionResult.selected.letter}`,
+            selectionMessage.message_id,
+          );
+        }
+      } finally {
+        activeSwipeOperations.delete(operationKey);
       }
       return;
     }
@@ -1025,22 +1377,36 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
         return;
       }
 
-      await ctx.answerCallbackQuery({ text: `已选择 ${choice}` });
-      try {
-        await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
-      } catch {
-        // The choice can still be processed if Telegram could not remove stale buttons.
+      const active = deps.sessionService.getActiveSession(accountId);
+      const operationKey = active?.activeCharacterAvatar && active.activeChatFile
+        ? swipeOperationKey(accountId, active.activeCharacterAvatar, active.activeChatFile)
+        : null;
+      if (operationKey && activeSwipeOperations.has(operationKey)) {
+        await ctx.answerCallbackQuery({ text: "当前回复正在处理，请稍后再点" });
+        return;
       }
-      const selectionMessage = await replyText(ctx, botCtx, `你选择了：${choice}`);
-      await sendConversationText(
-        ctx,
-        deps,
-        botCtx,
-        userId,
-        choice,
-        `branch:${ctx.callbackQuery.id}`,
-        selectionMessage.message_id,
-      );
+      if (operationKey) activeSwipeOperations.add(operationKey);
+
+      try {
+        await ctx.answerCallbackQuery({ text: `已选择 ${choice}` });
+        try {
+          await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
+        } catch {
+          // The choice can still be processed if Telegram could not remove stale buttons.
+        }
+        const selectionMessage = await replyText(ctx, botCtx, `你选择了：${choice}`);
+        await sendConversationText(
+          ctx,
+          deps,
+          botCtx,
+          userId,
+          choice,
+          `branch:${ctx.callbackQuery.id}`,
+          selectionMessage.message_id,
+        );
+      } finally {
+        if (operationKey) activeSwipeOperations.delete(operationKey);
+      }
       return;
     }
 
@@ -1242,6 +1608,66 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     await ctx.answerCallbackQuery();
   });
 
+  bot.on("edited_message:text", async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId) return;
+    const accountId = getAccountId(userId, deps, botCtx);
+    const state = getActiveSessionMessage(ctx.chat?.id, accountId, deps);
+    if (!state?.chatId) {
+      await replyText(ctx, botCtx, "未同步这次编辑：当前没有绑定角色和会话。");
+      return;
+    }
+
+    const latestTurn = getLatestTelegramTurn(
+      deps,
+      accountId,
+      state.chatId,
+      state.activeCharacterAvatar!,
+      state.activeChatFile!,
+    );
+    const editedMessageId = ctx.editedMessage.message_id;
+    if (!latestTurn || Number(latestTurn.externalRefs.userMessageId ?? 0) !== editedMessageId) {
+      await replyText(ctx, botCtx, "未同步这次编辑：只支持编辑当前会话最新一轮的用户消息。");
+      return;
+    }
+    if (latestTurn.status !== "completed") {
+      await replyText(ctx, botCtx, "当前回复仍在生成，请生成完成后再编辑最新消息。");
+      return;
+    }
+
+    const operationKey = swipeOperationKey(accountId, state.activeCharacterAvatar!, state.activeChatFile!);
+    if (activeSwipeOperations.has(operationKey)) {
+      await replyText(ctx, botCtx, "当前回复正在处理，请完成后再编辑最新消息。");
+      return;
+    }
+    activeSwipeOperations.add(operationKey);
+
+    try {
+      const result = await deps.chatEditService.editLatestUserMessage({
+        accountId,
+        avatar: state.activeCharacterAvatar!,
+        characterName: state.activeCharacterName!,
+        chatFile: state.activeChatFile!,
+        text: ctx.editedMessage.text,
+      });
+      deps.repositories.turnRepository.updateTurnExternalRefs(latestTurn.id, {
+        ...latestTurn.externalRefs,
+        editedUserMessageAt: new Date((ctx.editedMessage.edit_date ?? Math.floor(Date.now() / 1000)) * 1000).toISOString(),
+        swipeIndex: result.swipeIndex,
+        swipeCount: result.swipeCount || Number(latestTurn.externalRefs.swipeCount ?? 1),
+      });
+      await replyText(
+        ctx,
+        botCtx,
+        "✏️ 已同步修改到酒馆。当前回复暂时保留；请点击“重新生成”或“生成备选”。",
+      );
+    } catch (error) {
+      await replyText(ctx, botCtx, `同步编辑失败：${error instanceof Error ? error.message : String(error)}`, { priority: "critical" });
+    } finally {
+      activeSwipeOperations.delete(operationKey);
+    }
+  });
+
   bot.on("message:text", async (ctx) => {
     if (ctx.message.text.startsWith("/")) {
       return;
@@ -1252,14 +1678,30 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       return;
     }
 
-    await sendConversationText(
-      ctx,
-      deps,
-      botCtx,
-      userId,
-      ctx.message.text,
-      String(ctx.message.message_id),
-      ctx.message.message_id,
-    );
+    const accountId = getAccountId(userId, deps, botCtx);
+    const state = deps.sessionService.getActiveSession(accountId);
+    let operationKey: string | null = null;
+    if (state?.activeCharacterAvatar && state.activeChatFile) {
+      operationKey = swipeOperationKey(accountId, state.activeCharacterAvatar, state.activeChatFile);
+      if (activeSwipeOperations.has(operationKey)) {
+        await replyText(ctx, botCtx, "当前回复正在处理，请完成后再发送新消息。", { priority: "critical" });
+        return;
+      }
+      activeSwipeOperations.add(operationKey);
+    }
+
+    try {
+      await sendConversationText(
+        ctx,
+        deps,
+        botCtx,
+        userId,
+        ctx.message.text,
+        String(ctx.message.message_id),
+        ctx.message.message_id,
+      );
+    } finally {
+      if (operationKey) activeSwipeOperations.delete(operationKey);
+    }
   });
 }
