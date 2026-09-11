@@ -21,6 +21,7 @@ import {
 } from "./mvu-service";
 import { createXuanxiangTurnPrompt } from "./xuanxiang-service";
 import { buildEnhancedSystemPrompt } from "./enhanced-prompt-service";
+import { WebRelayService, type WebRelayOperation } from "./web-relay-service";
 
 function substitutePlaceholders(input: string, characterName: string, userName: string): string {
   return input
@@ -154,21 +155,46 @@ function assertChatIntact(avatar: string, chatFile: string, chat: ChatMessage[])
   }
 }
 
+function latestAssistantMessage(chat: ChatMessage[]): { message: ChatMessage; index: number } | null {
+  for (let index = chat.length - 1; index >= 1; index -= 1) {
+    const message = chat[index];
+    if (message?.is_system || message?.is_user || typeof message?.mes !== "string" || !message.mes.trim()) continue;
+    return { message, index };
+  }
+  return null;
+}
+
+function mvuStatusFromChat(
+  card: CharacterCardDetails,
+  chat: ChatMessage[],
+  userName: string,
+): import("../models/index").MvuStatusSnapshot | null {
+  const context = createMvuTurnContext(card, chat, userName);
+  if (!context || !context.snapshot.stat_data || typeof context.snapshot.stat_data !== "object") return null;
+  return {
+    statData: structuredClone(context.snapshot.stat_data as Record<string, unknown>),
+    rangeHints: structuredClone(context.rangeHints),
+  };
+}
+
 export { assertChatIntact };
 
 export class ConversationService {
   private readonly stClient: StClient;
   private readonly sessionTaskQueue: SessionTaskQueue;
   private readonly resolvePromptMode: (accountId: string) => PromptMode;
+  private readonly webRelayService: WebRelayService | null;
 
   public constructor(
     stClient: StClient,
     sessionTaskQueue: SessionTaskQueue,
     resolvePromptMode: (accountId: string) => PromptMode = () => "compact",
+    webRelayService: WebRelayService | null = null,
   ) {
     this.stClient = stClient;
     this.sessionTaskQueue = sessionTaskQueue;
     this.resolvePromptMode = resolvePromptMode;
+    this.webRelayService = webRelayService;
   }
 
   public async sendMessage(params: {
@@ -222,6 +248,10 @@ export class ConversationService {
     text: string;
     modelOverride?: string | null;
   }): Promise<SendMessageResult> {
+    if (this.resolvePromptMode(params.accountId) === "web") {
+      return this.executeWebRelayWithRollback({ ...params, operation: "send" }, false);
+    }
+
     const [settings, card, chat] = await Promise.all([
       this.stClient.getGenerationSettings(),
       this.stClient.getCharacterCard(params.avatar),
@@ -350,6 +380,25 @@ export class ConversationService {
     try {
       await params.onProgress?.({ type: "started", sessionKey });
 
+      if (this.resolvePromptMode(params.accountId) === "web") {
+        const result = await this.executeWebRelayWithRollback({
+          accountId: params.accountId,
+          avatar: params.avatar,
+          characterName: params.characterName,
+          chatFile: params.chatFile,
+          text: params.text,
+          modelOverride: params.modelOverride,
+          operation: params.includeUserMessage ? "send" : "regenerate",
+        }, params.persistChat === false);
+
+        await params.onProgress?.({
+          type: "done",
+          replyText: result.replyText,
+          latestRecord: result.latestRecord,
+        });
+        return result;
+      }
+
       const [settings, card, fetchedChat] = await Promise.all([
         this.stClient.getGenerationSettings(),
         this.stClient.getCharacterCard(params.avatar),
@@ -441,6 +490,83 @@ export class ConversationService {
     } catch (error) {
       const message = error instanceof Error ? error.message : "未知错误";
       await params.onProgress?.({ type: "error", message });
+      throw error;
+    }
+  }
+
+  private async executeWebRelayGeneration(params: {
+    accountId: string;
+    avatar: string;
+    characterName: string;
+    chatFile: string;
+    text?: string | null;
+    modelOverride?: string | null;
+    operation: WebRelayOperation;
+  }): Promise<GeneratedReplyCandidate> {
+    if (!this.webRelayService) {
+      throw new AppError("WEB_RELAY_UNAVAILABLE", "当前插件未初始化网页中继服务", 503);
+    }
+
+    const completion = await this.webRelayService.execute(params);
+    if (completion.characterAvatar && completion.characterAvatar !== params.avatar) {
+      throw new AppError("WEB_RELAY_CHARACTER_MISMATCH", "网页中继生成后角色发生变化，已拒绝读取结果", 409);
+    }
+    const normalizeChatId = (value: string): string => value.replace(/\.jsonl$/i, "");
+    if (completion.chatId && normalizeChatId(completion.chatId) !== normalizeChatId(params.chatFile)) {
+      throw new AppError("WEB_RELAY_CHAT_MISMATCH", "网页中继生成后会话发生变化，已拒绝读取结果", 409);
+    }
+
+    const [settings, card, chat] = await Promise.all([
+      this.stClient.getGenerationSettings(),
+      this.stClient.getCharacterCard(params.avatar),
+      this.stClient.getChatMessages(params.avatar, params.chatFile),
+    ]);
+    assertChatIntact(params.avatar, params.chatFile, chat);
+    const assistant = latestAssistantMessage(chat);
+    if (!assistant) {
+      throw new AppError("WEB_RELAY_EMPTY", "网页中继完成后没有找到角色回复", 502);
+    }
+    if (completion.messageIndex !== null && completion.messageIndex + 1 !== assistant.index) {
+      throw new AppError("WEB_RELAY_MESSAGE_MISMATCH", "网页中继返回的消息位置与酒馆记录不一致", 409);
+    }
+
+    const replyText = normalizeAssistantReply(params.characterName, String(assistant.message.mes));
+    return {
+      replyText,
+      latestRecord: pickLatestDialogueRecord(params.avatar, params.chatFile, chat),
+      mvuStatus: mvuStatusFromChat(card, chat, settings.username),
+      assistantMessage: structuredClone(assistant.message),
+    };
+  }
+
+  private async executeWebRelayWithRollback(
+    params: Parameters<ConversationService["executeWebRelayGeneration"]>[0],
+    restoreAfterSuccess: boolean,
+  ): Promise<GeneratedReplyCandidate> {
+    const backupChat = await this.stClient.getChatMessages(params.avatar, params.chatFile);
+    assertChatIntact(params.avatar, params.chatFile, backupChat);
+    try {
+      const result = await this.executeWebRelayGeneration(params);
+      if (restoreAfterSuccess) {
+        await this.stClient.saveChat({
+          avatar: params.avatar,
+          characterName: params.characterName,
+          chatFile: params.chatFile,
+          chat: backupChat,
+        });
+      }
+      return result;
+    } catch (error) {
+      try {
+        await this.stClient.saveChat({
+          avatar: params.avatar,
+          characterName: params.characterName,
+          chatFile: params.chatFile,
+          chat: backupChat,
+        });
+      } catch (restoreError) {
+        console.error("[st-im-bridge] failed to restore chat after web relay error", restoreError);
+      }
       throw error;
     }
   }

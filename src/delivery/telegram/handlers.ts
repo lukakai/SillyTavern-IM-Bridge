@@ -725,26 +725,46 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     const value = (ctx.message?.text ?? "").split(/\s+/)[1]?.trim().toLocaleLowerCase() ?? "";
     const compactAliases = new Set(["compact", "simple", "简化", "精简"]);
     const enhancedAliases = new Set(["enhanced", "完整", "增强"]);
+    const webAliases = new Set(["web", "网页", "原生"]);
     if (!value) {
       const current = deps.accountConfigService.getPromptMode(accountId);
+      const relay = deps.webRelayService.getStatus(accountId);
+      const modeLabel = current === "web" ? "网页完整" : current === "enhanced" ? "增强" : "简化";
       await replyText(ctx, botCtx, [
-        `当前提示词模式：${current === "enhanced" ? "增强" : "简化"}`,
+        `当前提示词模式：${modeLabel}`,
+        `网页中继：${relay.online ? `🟢 在线（${relay.workerCount} 个页面）` : "⚪ 离线"}`,
         "",
         "/prompt compact - 简化模式（兼容原有行为）",
         "/prompt enhanced - 增强模式（读取角色卡完整文本、Persona 和文本世界书）",
+        "/prompt web - 由已登录的酒馆网页执行原生 Generate 流程",
         "增强模式不会执行角色卡内的 JavaScript/EJS。",
       ].join("\n"));
       return;
     }
-    const mode = compactAliases.has(value) ? "compact" : enhancedAliases.has(value) ? "enhanced" : null;
+    const mode = compactAliases.has(value)
+      ? "compact"
+      : enhancedAliases.has(value)
+        ? "enhanced"
+        : webAliases.has(value)
+          ? "web"
+          : null;
     if (!mode) {
-      await replyText(ctx, botCtx, "无法识别该模式。请使用 /prompt compact 或 /prompt enhanced。");
+      await replyText(ctx, botCtx, "无法识别该模式。请使用 /prompt compact、/prompt enhanced 或 /prompt web。");
+      return;
+    }
+    if (mode === "web" && !deps.webRelayService.getStatus(accountId).online) {
+      await replyText(ctx, botCtx, [
+        "网页中继当前离线，尚未切换模式。",
+        "请先在 Mac mini 的专用 SillyTavern 页面打开 IM Bridge 设置，点击“在此浏览器启用网页中继”，然后重试 /prompt web。",
+      ].join("\n"));
       return;
     }
     deps.accountConfigService.setPromptMode(accountId, mode);
-    await replyText(ctx, botCtx, mode === "enhanced"
-      ? "✅ 已切换到增强提示词模式。后续生成会读取角色卡额外提示词、Persona 与文本世界书；不会执行 JavaScript/EJS。"
-      : "✅ 已切换到简化提示词模式。后续生成恢复原有的精简提示词与最近 24 条对话。");
+    await replyText(ctx, botCtx, mode === "web"
+      ? "✅ 已切换到网页完整模式。后续生成将由在线的 SillyTavern 页面执行，会使用该页面当前的预设、世界书、Persona 与前端扩展。中继离线时会明确报错，不会静默降级。"
+      : mode === "enhanced"
+        ? "✅ 已切换到增强提示词模式。后续生成会读取角色卡额外提示词、Persona 与文本世界书；不会执行 JavaScript/EJS。"
+        : "✅ 已切换到简化提示词模式。后续生成恢复原有的精简提示词与最近 24 条对话。");
   });
 
   bot.command("compress", async (ctx) => {

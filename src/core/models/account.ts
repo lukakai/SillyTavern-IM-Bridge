@@ -13,4 +13,4 @@ export interface ExternalIdentity {
   createdAt: string;
 }
 
-export type PromptMode = "compact" | "enhanced";
+export type PromptMode = "compact" | "enhanced" | "web";

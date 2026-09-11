@@ -8,6 +8,7 @@ import { SessionTaskQueue } from "../core/services/session-task-queue";
 import { AccountConfigService } from "../core/services/account-config-service";
 import { BindCodeService } from "../core/services/bind-code-service";
 import { BotManager } from "../core/services/bot-manager";
+import { WebRelayService } from "../core/services/web-relay-service";
 import { CompressionClient } from "../infra/llm/compression-client";
 import { createSqlitePersistence } from "../infra/persistence/sqlite-store";
 import { StClient } from "../infra/st/st-client";
@@ -42,6 +43,7 @@ export interface AppServices {
   compressionService: CompressionService;
   accountConfigService: AccountConfigService;
   bindCodeService: BindCodeService;
+  webRelayService: WebRelayService;
   botManager: BotManager;
   repositories: ReturnType<typeof createSqlitePersistence>;
   sseRegistry: SseRegistry;
@@ -62,12 +64,18 @@ export function buildServices(): AppServices {
     repositories.accountRepository,
     repositories.accountConfigRepository,
   );
+  const webRelayService = new WebRelayService({
+    jobTimeoutMs: runtime.webRelayJobTimeoutMs,
+    presenceTimeoutMs: runtime.webRelayPresenceTimeoutMs,
+    leaseTimeoutMs: runtime.webRelayLeaseTimeoutMs,
+  });
   const sessionService = new SessionService(repositories.sessionRepository);
   const sessionTaskQueue = new SessionTaskQueue();
   const conversationService = new ConversationService(
     stClient,
     sessionTaskQueue,
     (accountId) => accountConfigService.getPromptMode(accountId),
+    webRelayService,
   );
   const chatEditService = new ChatEditService(stClient, conversationService, sessionTaskQueue, repositories.historySyncRepository);
   const modelService = new ModelService(stClient, repositories.sessionRepository);
@@ -103,6 +111,7 @@ export function buildServices(): AppServices {
     compressionService,
     accountConfigService,
     bindCodeService,
+    webRelayService,
     repositories,
     sseRegistry: new SseRegistry(),
   };

@@ -75,7 +75,7 @@ export class AccountConfigService {
 
   public getPromptMode(accountId: string): PromptMode {
     const configured = this.configRepo.get(accountId)?.tg.advanced.promptMode;
-    return configured === "enhanced" ? "enhanced" : "compact";
+    return configured === "enhanced" || configured === "web" ? configured : "compact";
   }
 
   public setPromptMode(accountId: string, mode: PromptMode): AccountConfigRecord {

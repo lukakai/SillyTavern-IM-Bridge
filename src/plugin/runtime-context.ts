@@ -13,6 +13,12 @@ export interface RuntimeContext {
   stGenerateTimeoutMs: number;
   /** 流式生成 idle 超时：连续无新 token 超过该值才中断；有增量则续命。 */
   stGenerateIdleTimeoutMs: number;
+  /** Browser relay job hard timeout. */
+  webRelayJobTimeoutMs: number;
+  /** How long a relay heartbeat remains online. */
+  webRelayPresenceTimeoutMs: number;
+  /** Claimed jobs become available again if heartbeats stop for this long. */
+  webRelayLeaseTimeoutMs: number;
   pageSize: number;
   rateLimitWindowMs: number;
   rateLimitMaxRequests: number;
@@ -51,6 +57,9 @@ export function loadRuntimeContext(): RuntimeContext {
     stGenerateTimeoutMs: intEnv("ST_GENERATE_TIMEOUT_MS", 900_000),
     // 有 token 就续命；只有上游卡住才断。默认 90 秒 idle。
     stGenerateIdleTimeoutMs: intEnv("ST_GENERATE_IDLE_TIMEOUT_MS", 90_000),
+    webRelayJobTimeoutMs: intEnv("WEB_RELAY_JOB_TIMEOUT_MS", 900_000),
+    webRelayPresenceTimeoutMs: intEnv("WEB_RELAY_PRESENCE_TIMEOUT_MS", 120_000),
+    webRelayLeaseTimeoutMs: intEnv("WEB_RELAY_LEASE_TIMEOUT_MS", 120_000),
     pageSize: intEnv("PAGE_SIZE", 8),
     rateLimitWindowMs: intEnv("RATE_LIMIT_WINDOW_MS", 60000),
     rateLimitMaxRequests: intEnv("RATE_LIMIT_MAX_REQUESTS", 60),

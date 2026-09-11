@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createSqlitePersistence } from "../src/infra/persistence/sqlite-store";
+import { AccountConfigService } from "../src/core/services/account-config-service";
 
 let tmpDir: string;
 
@@ -58,6 +59,19 @@ describe("AccountConfigRepository", () => {
     persistence.accountConfigRepository.upsert("handle:u3", { telegramBotToken: null, botEnabled: true });
     const enabled = persistence.accountConfigRepository.listEnabledWithToken();
     expect(enabled.map((c) => c.accountId)).toEqual(["handle:u1"]);
+    persistence.close();
+  });
+
+  it("persists web prompt mode in the existing advanced config JSON", () => {
+    const { persistence } = makeRepo();
+    persistence.accountRepository.ensureSTUserAccount({ handle: "relay", role: "user" });
+    const service = new AccountConfigService(
+      persistence.accountRepository,
+      persistence.accountConfigRepository,
+    );
+    service.setPromptMode("handle:relay", "web");
+    expect(service.getPromptMode("handle:relay")).toBe("web");
+    expect(persistence.accountConfigRepository.get("handle:relay")?.tg.advanced.promptMode).toBe("web");
     persistence.close();
   });
 });

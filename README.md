@@ -2,7 +2,7 @@
 
 SillyTavern server plugin: bridge ST chats to instant messaging channels (currently Telegram).
 
-> 配套 UI 扩展：[SillyTavern-IM-Bridge-UI](https://github.com/rinmashiro0529/SillyTavern-IM-Bridge-UI)
+> 配套 UI 扩展：[SillyTavern-IM-Bridge-UI](https://github.com/lukakai/SillyTavern-IM-Bridge-UI)
 > 完整交接文档：本仓库 `PROJECT_HANDOVER.md`
 
 ## 本 Fork 增强
@@ -15,6 +15,7 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 - 对使用 EJS 动态注入选项规则的角色卡，只解析明确的 `选项栏输出规范` 引用、MVU 状态路径和数值门槛；不会执行角色卡中的 EJS/JavaScript。当前状态未达到门槛时不会注入相关规则。
 - 每条 Telegram 角色回复提供 SillyTavern Swipe 控件：可按需重新生成当前回复、追加最多 20 条备选，并用左右按钮切换；正文、生成元数据、MVU 快照和 `<xuanxiang>` 交互状态会随所选 Swipe 一起同步回酒馆。普通角色卡同样可用。
 - 支持编辑当前会话最新一轮的 Telegram 用户消息。编辑只同步到 SillyTavern 并保留当前回复，不会立即调用模型；随后点击“重新生成”或“生成备选”时，模型会使用编辑后的内容。更早的 Telegram 消息会被拒绝，避免历史定位和状态错位。
+- 新增 `/prompt web` 网页完整模式：Telegram 只提交生成任务，由一个已登录的 SillyTavern 浏览器页面调用原生 `Generate()`。因此会使用该页面当前的预设、世界书、Persona、Regex、生成拦截器及 MVU 等前端扩展；中继离线时明确报错，不会静默退回简化模式。
 
 ## 安装
 
@@ -29,7 +30,7 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
    ⚠️ 目录名必须叫 `st-im-bridge`，与 `package.json` 内的 plugin id 一致；ST plugin loader 用目录名做 id 校验（`^[a-z0-9_-]+$`）。
 3. 重启 SillyTavern。
 4. 安装配套 UI 扩展（任选一种方式）：
-   - **网页方式**：SillyTavern 网页 → Extensions → Install Extension → 粘贴 `https://github.com/rinmashiro0529/SillyTavern-IM-Bridge-UI.git`。该方式装到当前登录 handle 的 `data/<handle>/extensions/`。
+   - **网页方式**：SillyTavern 网页 → Extensions → Install Extension → 粘贴 `https://github.com/lukakai/SillyTavern-IM-Bridge-UI.git`。该方式装到当前登录 handle 的 `data/<handle>/extensions/`。
    - **服务端方式**：直接 `git clone` 到 `<ST 数据目录>/<handle>/extensions/SillyTavern-IM-Bridge-UI/`，多个 handle 各自一份。
 
 ## Telegram 角色与新会话
@@ -41,9 +42,32 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 
 ## 提示词模式
 
-- `/prompt` 查看当前模式；`/prompt compact` 使用原有简化提示词（默认），`/prompt enhanced` 启用增强模式。模式按账号保存，重启后仍然有效。
+- `/prompt` 查看当前模式及网页中继状态；`/prompt compact` 使用原有简化提示词（默认），`/prompt enhanced` 启用安全增强模式，`/prompt web` 启用网页完整模式。模式按账号保存，重启后仍然有效。
 - 增强模式会读取角色卡的 `system_prompt`、`post_history_instructions`、depth prompt、当前 Persona，以及角色卡内嵌世界书的常驻和关键词条目，并把对话窗口从 24 条提高到 48 条。
 - 世界书支持主/次关键词、匹配大小写与完整单词、扫描深度、概率、互斥分组、有限递归、插入顺序和字符预算。为保证 Unraid 后台运行安全稳定，不执行 EJS/JavaScript；含动态代码的条目会跳过。因此增强模式接近文本卡的网页体验，但不宣称与 SillyTavern 前端完全一致。
+
+### 网页完整模式
+
+网页完整模式需要同时更新 server plugin 和配套 UI 扩展，并在一个专用的 Chromium/Chrome 配置中登录 SillyTavern：
+
+1. 打开 SillyTavern → Extensions → IM Bridge →「网页完整模式中继」。
+2. 点击「在此浏览器启用网页中继」，保持这个页面打开。
+3. 在 Telegram 发送 `/prompt`，确认显示「网页中继：🟢 在线」。
+4. 发送 `/prompt web`。后续普通回复、重新生成和新增/替换备选都会由网页端生成。
+
+中继按 SillyTavern 登录账号隔离，并通过同源登录态和 CSRF 保护；不需要把 Telegram Token 或酒馆密码交给 Mac 上的额外程序。一次只有一个浏览器标签页会领任务。生成前会自动切换到 Telegram 当前选择的角色和会话，因此不要在日常使用的浏览器配置中启用，建议使用专用 Chrome 配置。失败时插件会尝试恢复生成前的聊天记录；浏览器离线不会自动降级到其他提示词模式。
+
+首次配置 Mac 专用浏览器可运行（把地址替换成你的 Unraid SillyTavern 地址）：
+
+```sh
+open -na "Google Chrome" --args \
+  --user-data-dir="$HOME/Library/Application Support/SillyTavern-IM-Bridge" \
+  --app="http://UNRAID-IP:8567/"
+```
+
+在这个独立窗口中完成 Basic Auth／SillyTavern 登录并启用中继。确认可用后再考虑用同一个 profile 启动 headless Chromium；首次登录和排错阶段建议先保持可见窗口。
+
+可选超时环境变量：`WEB_RELAY_JOB_TIMEOUT_MS`（默认 15 分钟）、`WEB_RELAY_PRESENCE_TIMEOUT_MS` 和 `WEB_RELAY_LEASE_TIMEOUT_MS`（默认均为 2 分钟）。
 
 ## 路径与端口
 

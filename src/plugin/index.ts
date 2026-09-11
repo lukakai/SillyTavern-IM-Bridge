@@ -30,6 +30,7 @@ export async function exit(): Promise<void> {
   if (!current) return;
   try { await current.sseRegistry.drainAll(2000); } catch (err) { console.error("[st-im-bridge] sse drain failed", err); }
   try { await current.botManager.stopAll(); } catch (err) { console.error("[st-im-bridge] stop bots failed", err); }
+  try { current.webRelayService.close(); } catch (err) { console.error("[st-im-bridge] close web relay failed", err); }
   try { current.repositories.close(); } catch (err) { console.error("[st-im-bridge] db close failed", err); }
   console.log("[st-im-bridge] exited");
 }

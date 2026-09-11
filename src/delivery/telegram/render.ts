@@ -587,6 +587,7 @@ export function renderHelp(): string {
     "角色回复下方可按需重新生成、添加备选，并用左右按钮切换。",
     "编辑最新一条 Telegram 用户消息会同步到 ST，但不会自动生成；随后再点回复下方按钮。",
     "使用 /prompt enhanced 可读取角色卡额外提示词、Persona 与文本世界书。",
+    "使用 /prompt web 可让在线的酒馆网页执行完整前端生成流程。",
     "",
     "兼容长命令：/characters /history /current。",
   ].join("\n");

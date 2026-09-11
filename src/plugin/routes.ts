@@ -139,6 +139,56 @@ export function registerRoutes(router: Router, services: AppServices): void {
     });
   }));
 
+  router.get("/web-relay/status", asyncHandler(async (req, res) => {
+    res.json(services.webRelayService.getStatus(accountIdFromCtx(req)));
+  }));
+
+  router.post("/web-relay/heartbeat", asyncHandler(async (req, res) => {
+    const accountId = accountIdFromCtx(req);
+    const workerId = typeof req.body?.workerId === "string" ? req.body.workerId.slice(0, 200) : "";
+    const relayVersion = typeof req.body?.relayVersion === "string" ? req.body.relayVersion.slice(0, 100) : null;
+    const pageUrl = typeof req.body?.pageUrl === "string" ? req.body.pageUrl.slice(0, 500) : null;
+    const activeJobId = typeof req.body?.activeJobId === "string" ? req.body.activeJobId.slice(0, 200) : null;
+    res.json(services.webRelayService.heartbeat(accountId, { workerId, relayVersion, pageUrl }, activeJobId));
+  }));
+
+  router.post("/web-relay/poll", asyncHandler(async (req, res) => {
+    const accountId = accountIdFromCtx(req);
+    const workerId = typeof req.body?.workerId === "string" ? req.body.workerId.slice(0, 200) : "";
+    const relayVersion = typeof req.body?.relayVersion === "string" ? req.body.relayVersion.slice(0, 100) : null;
+    const pageUrl = typeof req.body?.pageUrl === "string" ? req.body.pageUrl.slice(0, 500) : null;
+    const waitMs = Number(req.body?.waitMs);
+    const job = await services.webRelayService.poll(
+      accountId,
+      { workerId, relayVersion, pageUrl },
+      Number.isFinite(waitMs) ? waitMs : undefined,
+    );
+    if (!job) {
+      res.status(204).end();
+      return;
+    }
+    res.json({ job });
+  }));
+
+  router.post("/web-relay/jobs/:jobId/complete", asyncHandler(async (req, res) => {
+    const accountId = accountIdFromCtx(req);
+    const workerId = typeof req.body?.workerId === "string" ? req.body.workerId.slice(0, 200) : "";
+    services.webRelayService.complete(accountId, workerId, req.params.jobId, {
+      messageIndex: Number.isInteger(req.body?.messageIndex) ? Number(req.body.messageIndex) : null,
+      chatId: typeof req.body?.chatId === "string" ? req.body.chatId.slice(0, 500) : null,
+      characterAvatar: typeof req.body?.characterAvatar === "string" ? req.body.characterAvatar.slice(0, 500) : null,
+    });
+    res.status(204).end();
+  }));
+
+  router.post("/web-relay/jobs/:jobId/fail", asyncHandler(async (req, res) => {
+    const accountId = accountIdFromCtx(req);
+    const workerId = typeof req.body?.workerId === "string" ? req.body.workerId.slice(0, 200) : "";
+    const message = typeof req.body?.message === "string" ? req.body.message : "未知错误";
+    services.webRelayService.fail(accountId, workerId, req.params.jobId, message);
+    res.status(204).end();
+  }));
+
   router.get("/characters", asyncHandler(async (_req, res) => {
     const items = await services.characterService.listCharacters();
     res.json({ items });
