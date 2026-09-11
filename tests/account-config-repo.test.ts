@@ -42,6 +42,9 @@ describe("AccountConfigRepository", () => {
     expect(cfg?.telegramBotToken).toBe("abc:123");
     expect(cfg?.telegramAllowedUserIds).toEqual(["111", "222"]);
     expect(cfg?.botEnabled).toBe(true);
+    persistence.accountConfigRepository.upsert(accountId, { tg: { advanced: { promptMode: "enhanced" } } });
+    expect(persistence.accountConfigRepository.get(accountId)?.tg.advanced.promptMode).toBe("enhanced");
+    expect(persistence.accountConfigRepository.get(accountId)?.telegramBotToken).toBe("abc:123");
     persistence.close();
   });
 

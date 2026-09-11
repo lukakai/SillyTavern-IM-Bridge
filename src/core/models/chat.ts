@@ -55,6 +55,42 @@ export interface XuanxiangCardConfig {
   activationMin: number | null;
 }
 
+export interface WorldBookEntry {
+  id: number | string | null;
+  comment: string;
+  content: string;
+  keys: string[];
+  secondaryKeys: string[];
+  enabled: boolean;
+  constant: boolean;
+  selective: boolean;
+  insertionOrder: number;
+  position: string;
+  probability: number;
+  useProbability: boolean;
+  selectiveLogic: number;
+  caseSensitive: boolean;
+  matchWholeWords: boolean;
+  scanDepth: number | null;
+  preventRecursion: boolean;
+  excludeRecursion: boolean;
+  group: string;
+  groupWeight: number;
+  ignoreBudget: boolean;
+  matchPersonaDescription: boolean;
+  matchCharacterDescription: boolean;
+  matchCharacterPersonality: boolean;
+  matchScenario: boolean;
+  matchCreatorNotes: boolean;
+  matchCharacterDepthPrompt: boolean;
+}
+
+export interface CharacterDepthPrompt {
+  prompt: string;
+  depth: number;
+  role: number;
+}
+
 export interface LatestDialogueRecord {
   messageId: string;
   turnId: string | null;
@@ -93,6 +129,11 @@ export interface CharacterCardDetails {
   firstMes: string;
   alternateGreetings: string[];
   mesExample: string;
+  systemPrompt?: string;
+  creatorNotes?: string;
+  postHistoryInstructions?: string;
+  depthPrompt?: CharacterDepthPrompt | null;
+  worldBookEntries?: WorldBookEntry[];
   mvu: MvuCardConfig | null;
   xuanxiang: XuanxiangCardConfig | null;
 }

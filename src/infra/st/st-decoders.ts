@@ -8,6 +8,7 @@
   MvuRangeHint,
   StGenerationSettings,
   XuanxiangCardConfig,
+  WorldBookEntry,
 } from "../../core/models/index";
 import { timestampToMillis, normalizeChatFileName } from "./st-chat-mapper";
 import { createStPayloadError } from "./st-errors";
@@ -36,6 +37,65 @@ export function decodeCharacterSummaries(payload: unknown): CharacterSummary[] {
 
 function cardData(item: any): any {
   return item?.data && typeof item.data === "object" ? item.data : item;
+}
+
+function decodeWorldBookEntries(data: any): WorldBookEntry[] {
+  const entries = Array.isArray(data?.character_book?.entries) ? data.character_book.entries : [];
+  return entries
+    .filter((entry: any) => entry && typeof entry === "object" && typeof entry.content === "string")
+    .map((entry: any) => {
+      const extensions = entry.extensions && typeof entry.extensions === "object" ? entry.extensions : {};
+      const topLevelPosition = typeof entry.position === "string" ? entry.position : "";
+      const extensionPosition = Number(extensions.position);
+      const position = topLevelPosition || (extensionPosition === 0 ? "before_char" : "after_char");
+      const probability = Number(extensions.probability);
+      const insertionOrder = Number(entry.insertion_order);
+      const scanDepth = Number(extensions.scan_depth);
+      const groupWeight = Number(extensions.group_weight);
+      return {
+        id: typeof entry.id === "number" || typeof entry.id === "string" ? entry.id : null,
+        comment: typeof entry.comment === "string" ? entry.comment : "",
+        content: entry.content,
+        keys: (Array.isArray(entry.keys) ? entry.keys : Array.isArray(entry.key) ? entry.key : [])
+          .filter((value: unknown): value is string => typeof value === "string" && Boolean(value.trim())),
+        secondaryKeys: (Array.isArray(entry.secondary_keys) ? entry.secondary_keys : [])
+          .filter((value: unknown): value is string => typeof value === "string" && Boolean(value.trim())),
+        enabled: entry.enabled !== false,
+        constant: entry.constant === true,
+        selective: entry.selective !== false,
+        insertionOrder: Number.isFinite(insertionOrder) ? insertionOrder : 0,
+        position,
+        probability: Number.isFinite(probability) ? Math.min(100, Math.max(0, probability)) : 100,
+        useProbability: extensions.useProbability === true,
+        selectiveLogic: Number.isFinite(Number(extensions.selectiveLogic)) ? Number(extensions.selectiveLogic) : 0,
+        caseSensitive: extensions.case_sensitive === true,
+        matchWholeWords: extensions.match_whole_words === true,
+        scanDepth: Number.isInteger(scanDepth) && scanDepth > 0 ? scanDepth : null,
+        preventRecursion: extensions.prevent_recursion === true,
+        excludeRecursion: extensions.exclude_recursion === true,
+        group: typeof extensions.group === "string" ? extensions.group.trim() : "",
+        groupWeight: Number.isFinite(groupWeight) ? groupWeight : 100,
+        ignoreBudget: extensions.ignore_budget === true,
+        matchPersonaDescription: extensions.match_persona_description === true,
+        matchCharacterDescription: extensions.match_character_description === true,
+        matchCharacterPersonality: extensions.match_character_personality === true,
+        matchScenario: extensions.match_scenario === true,
+        matchCreatorNotes: extensions.match_creator_notes === true,
+        matchCharacterDepthPrompt: extensions.match_character_depth_prompt === true,
+      };
+    });
+}
+
+function decodeDepthPrompt(data: any): { prompt: string; depth: number; role: number } | null {
+  const raw = data?.extensions?.depth_prompt;
+  if (!raw || typeof raw !== "object" || typeof raw.prompt !== "string" || !raw.prompt.trim()) return null;
+  const depth = Number(raw.depth);
+  const role = Number(raw.role);
+  return {
+    prompt: raw.prompt,
+    depth: Number.isInteger(depth) && depth >= 0 ? depth : 4,
+    role: Number.isInteger(role) && role >= 0 && role <= 2 ? role : 0,
+  };
 }
 
 function expandRangePath(rawPath: string): string[] {
@@ -201,6 +261,11 @@ export function decodeCharacterCard(payload: unknown, avatar: string): Character
       : Array.isArray(item.alternate_greetings) ? item.alternate_greetings : [])
       .filter((greeting: unknown): greeting is string => typeof greeting === "string"),
     mesExample: typeof item.mes_example === "string" ? item.mes_example : (typeof data?.mes_example === "string" ? data.mes_example : ""),
+    systemPrompt: typeof data?.system_prompt === "string" ? data.system_prompt : "",
+    creatorNotes: typeof data?.creator_notes === "string" ? data.creator_notes : "",
+    postHistoryInstructions: typeof data?.post_history_instructions === "string" ? data.post_history_instructions : "",
+    depthPrompt: decodeDepthPrompt(data),
+    worldBookEntries: decodeWorldBookEntries(data),
     mvu: decodeMvuCardConfig(item),
     xuanxiang: decodeXuanxiangCardConfig(item),
   };
@@ -258,6 +323,9 @@ export function decodeGenerationSettings(payload: any): StGenerationSettings {
 
   return {
     username: typeof settings.username === "string" && settings.username.trim() ? settings.username.trim() : "User",
+    personaDescription: typeof settings?.power_user?.persona_description === "string"
+      ? settings.power_user.persona_description
+      : typeof settings?.persona_description === "string" ? settings.persona_description : "",
     chatCompletionSource: source,
     model,
     customUrl,

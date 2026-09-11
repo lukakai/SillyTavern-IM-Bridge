@@ -718,6 +718,35 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     await replyCompressionModels(ctx, deps, getAccountId(userId, deps, botCtx), botCtx, 0);
   });
 
+  bot.command(["prompt", "promptmode"], async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId) return;
+    const accountId = getAccountId(userId, deps, botCtx);
+    const value = (ctx.message?.text ?? "").split(/\s+/)[1]?.trim().toLocaleLowerCase() ?? "";
+    const compactAliases = new Set(["compact", "simple", "简化", "精简"]);
+    const enhancedAliases = new Set(["enhanced", "完整", "增强"]);
+    if (!value) {
+      const current = deps.accountConfigService.getPromptMode(accountId);
+      await replyText(ctx, botCtx, [
+        `当前提示词模式：${current === "enhanced" ? "增强" : "简化"}`,
+        "",
+        "/prompt compact - 简化模式（兼容原有行为）",
+        "/prompt enhanced - 增强模式（读取角色卡完整文本、Persona 和文本世界书）",
+        "增强模式不会执行角色卡内的 JavaScript/EJS。",
+      ].join("\n"));
+      return;
+    }
+    const mode = compactAliases.has(value) ? "compact" : enhancedAliases.has(value) ? "enhanced" : null;
+    if (!mode) {
+      await replyText(ctx, botCtx, "无法识别该模式。请使用 /prompt compact 或 /prompt enhanced。");
+      return;
+    }
+    deps.accountConfigService.setPromptMode(accountId, mode);
+    await replyText(ctx, botCtx, mode === "enhanced"
+      ? "✅ 已切换到增强提示词模式。后续生成会读取角色卡额外提示词、Persona 与文本世界书；不会执行 JavaScript/EJS。"
+      : "✅ 已切换到简化提示词模式。后续生成恢复原有的精简提示词与最近 24 条对话。");
+  });
+
   bot.command("compress", async (ctx) => {
     const userId = await requireAuthorized(ctx, deps, botCtx);
     if (!userId) {

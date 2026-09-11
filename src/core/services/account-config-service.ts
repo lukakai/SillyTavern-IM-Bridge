@@ -1,3 +1,4 @@
+import type { PromptMode } from "../models/index";
 import type { AccountConfigRepository, AccountConfigRecord, AccountConfigPatch, AccountRepository } from "../ports/repositories";
 import { AppError } from "../../shared/errors/app-error";
 
@@ -70,6 +71,23 @@ export class AccountConfigService {
     if (!cfg) return false;
     if (cfg.telegramAllowedUserIds.length === 0) return false;
     return cfg.telegramAllowedUserIds.includes(String(telegramUserId));
+  }
+
+  public getPromptMode(accountId: string): PromptMode {
+    const configured = this.configRepo.get(accountId)?.tg.advanced.promptMode;
+    return configured === "enhanced" ? "enhanced" : "compact";
+  }
+
+  public setPromptMode(accountId: string, mode: PromptMode): AccountConfigRecord {
+    const current = this.ensure(accountId);
+    return this.update(accountId, {
+      tg: {
+        advanced: {
+          ...current.tg.advanced,
+          promptMode: mode,
+        },
+      },
+    });
   }
 
   public linkTelegramIdentity(accountId: string, telegramUserId: string): void {

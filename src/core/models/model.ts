@@ -2,6 +2,7 @@
 
 export interface StGenerationSettings {
   username: string;
+  personaDescription?: string;
   chatCompletionSource: string;
   model: string;
   customUrl: string;

@@ -58,9 +58,17 @@ export function buildServices(): AppServices {
     generateTimeoutMs: runtime.stGenerateTimeoutMs,
     generateIdleTimeoutMs: runtime.stGenerateIdleTimeoutMs,
   });
+  const accountConfigService = new AccountConfigService(
+    repositories.accountRepository,
+    repositories.accountConfigRepository,
+  );
   const sessionService = new SessionService(repositories.sessionRepository);
   const sessionTaskQueue = new SessionTaskQueue();
-  const conversationService = new ConversationService(stClient, sessionTaskQueue);
+  const conversationService = new ConversationService(
+    stClient,
+    sessionTaskQueue,
+    (accountId) => accountConfigService.getPromptMode(accountId),
+  );
   const chatEditService = new ChatEditService(stClient, conversationService, sessionTaskQueue, repositories.historySyncRepository);
   const modelService = new ModelService(stClient, repositories.sessionRepository);
 
@@ -79,10 +87,6 @@ export function buildServices(): AppServices {
     { keepRecent: 15, batchSize: 5, timeoutMs: 60000, retryCount: 3, retryDelayMs: 1500 },
   );
 
-  const accountConfigService = new AccountConfigService(
-    repositories.accountRepository,
-    repositories.accountConfigRepository,
-  );
   const bindCodeService = new BindCodeService(
     repositories.bindCodeRepository,
     accountConfigService,

@@ -39,6 +39,12 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 - 直接新建时，如果角色卡包含多个 `alternate_greetings`，Telegram 会逐条显示开场白，使用左右按钮查看，点击「使用这个开头」后才创建会话；单开头角色卡会直接创建。
 - `/new` 仍可在已选角色上重复打开开场白选择。选择开场白不会修改角色卡原文件。
 
+## 提示词模式
+
+- `/prompt` 查看当前模式；`/prompt compact` 使用原有简化提示词（默认），`/prompt enhanced` 启用增强模式。模式按账号保存，重启后仍然有效。
+- 增强模式会读取角色卡的 `system_prompt`、`post_history_instructions`、depth prompt、当前 Persona，以及角色卡内嵌世界书的常驻和关键词条目，并把对话窗口从 24 条提高到 48 条。
+- 世界书支持主/次关键词、匹配大小写与完整单词、扫描深度、概率、互斥分组、有限递归、插入顺序和字符预算。为保证 Unraid 后台运行安全稳定，不执行 EJS/JavaScript；含动态代码的条目会跳过。因此增强模式接近文本卡的网页体验，但不宣称与 SillyTavern 前端完全一致。
+
 ## 路径与端口
 
 - 路由前缀：`/api/plugins/st-im-bridge/*`

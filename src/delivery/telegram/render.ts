@@ -578,6 +578,7 @@ export function renderHelp(): string {
     "/recent - 查看最近使用的会话",
     "/model - 查看并切换当前可用模型",
     "/cmodel - 查看并切换压缩专用模型",
+    "/prompt - 查看或切换提示词模式",
     "/compress - 压缩当前会话历史（保留最近 15 条）",
     "/help - 查看帮助",
     "",
@@ -585,6 +586,7 @@ export function renderHelp(): string {
     "选中角色后可查看历史会话，或直接选择开场白开始新会话。",
     "角色回复下方可按需重新生成、添加备选，并用左右按钮切换。",
     "编辑最新一条 Telegram 用户消息会同步到 ST，但不会自动生成；随后再点回复下方按钮。",
+    "使用 /prompt enhanced 可读取角色卡额外提示词、Persona 与文本世界书。",
     "",
     "兼容长命令：/characters /history /current。",
   ].join("\n");

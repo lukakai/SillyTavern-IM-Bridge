@@ -13,6 +13,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "revoke", description: "撤回上一轮(TG+ST)" },
   { command: "model", description: "切换模型" },
   { command: "cmodel", description: "切换压缩模型" },
+  { command: "prompt", description: "切换提示词模式" },
   { command: "compress", description: "压缩当前会话历史" },
   { command: "recent", description: "最近会话" },
   { command: "help", description: "查看帮助" },

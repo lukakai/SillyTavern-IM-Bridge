@@ -12,3 +12,5 @@ export interface ExternalIdentity {
   externalUserId: string;
   createdAt: string;
 }
+
+export type PromptMode = "compact" | "enhanced";

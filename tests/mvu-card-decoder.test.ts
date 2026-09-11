@@ -63,6 +63,46 @@ describe("decodeCharacterCard MVU metadata", () => {
     expect(decoded.alternateGreetings).toEqual(["备用一", "备用二"]);
   });
 
+  it("decodes enhanced prompt fields and embedded world book metadata", () => {
+    const decoded = decodeCharacterCard([{
+      avatar: "full.png",
+      data: {
+        name: "完整角色",
+        system_prompt: "系统规则",
+        post_history_instructions: "历史后指令",
+        extensions: { depth_prompt: { prompt: "深度提示", depth: 3, role: 1 } },
+        character_book: {
+          entries: [{
+            id: 7,
+            comment: "地点",
+            content: "地点资料",
+            keys: ["机场"],
+            secondary_keys: ["夜晚"],
+            enabled: true,
+            constant: false,
+            selective: true,
+            insertion_order: 80,
+            position: "before_char",
+            extensions: { probability: 75, useProbability: true, scan_depth: 5, group: "地点组" },
+          }],
+        },
+      },
+    }], "full.png");
+
+    expect(decoded.systemPrompt).toBe("系统规则");
+    expect(decoded.postHistoryInstructions).toBe("历史后指令");
+    expect(decoded.depthPrompt).toEqual({ prompt: "深度提示", depth: 3, role: 1 });
+    expect(decoded.worldBookEntries?.[0]).toMatchObject({
+      comment: "地点",
+      keys: ["机场"],
+      secondaryKeys: ["夜晚"],
+      insertionOrder: 80,
+      probability: 75,
+      scanDepth: 5,
+      group: "地点组",
+    });
+  });
+
   it("resolves referenced xuanxiang rules without executing the card EJS", () => {
     const decoded = decodeCharacterCard([{
       avatar: "luo.png",

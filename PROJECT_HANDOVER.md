@@ -276,8 +276,11 @@ external_identities(id PK, account_id, channel, external_user_id, UNIQUE(channel
 /revoke        撤回上一轮（TG+ST 同步）
 /model         切换主模型
 /cmodel        切换压缩模型
+/prompt        查看或切换 compact/enhanced 提示词模式
 /compress      压缩当前会话
 ```
+
+`/prompt enhanced` 会按账号持久化到 `tg_advanced_json.promptMode`。该模式在服务端安全读取角色卡额外提示词、Persona 与内嵌世界书，支持常驻/关键词/次关键词/有限递归/概率/分组/预算，并能静态解析常见的 MVU `getvar('stat_data.…')` 数值阶段条件；绝不执行任意 EJS/JavaScript。不支持的动态条目会跳过。`/prompt compact` 保留原有行为，也是默认值。
 
 **鉴权规则**：除 `/bind` 外所有命令都过 `requireAuthorized(ctx, deps, botCtx)`，检查 `accountConfigService.isTelegramUserAllowed(accountId, ctx.from.id)`。绑定码兑换成功后 TG userId（数字字符串）会被加入 `telegram_allowed_user_ids` 列表。
 
@@ -469,7 +472,7 @@ git fetch origin && git reset --hard origin/main
 ## 七、当前已知遗留 / TODO
 
 - `infra/llm/compression-client.ts` 默认 timeoutMs/batchSize 与 `account_configs` 字段重复，未来改为完全按 cfg 注入。
-- `tg_advanced_json` 字段当前只透传到 TelegramChatQueue 选项，没有 schema 校验，UI 也没暴露编辑入口。
+- `tg_advanced_json` 同时保存 TelegramChatQueue 高级参数与 `promptMode`；UI 尚未暴露编辑入口，提示词模式由 Telegram `/prompt` 指令管理。
 - `.bak_*` 等历史备份文件清理已完成；后续 PR 不要新增此类文件。
 - 仅支持 Telegram；未来若加 Tinode/HTTP 客户端通道，需要：
   1. 在 `turn_records.channel` 字面量集合里加新值（当前 HTTP 路由用 `"ios"`，TG handler 用 `"telegram"`）

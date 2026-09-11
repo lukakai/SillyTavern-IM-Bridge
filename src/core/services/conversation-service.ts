@@ -2,6 +2,7 @@
   CharacterCardDetails,
   ChatMessage,
   GeneratedReplyCandidate,
+  PromptMode,
   SendMessageResult,
   StreamEvent,
   StGenerationSettings,
@@ -19,6 +20,7 @@ import {
   type MvuReplyResult,
 } from "./mvu-service";
 import { createXuanxiangTurnPrompt } from "./xuanxiang-service";
+import { buildEnhancedSystemPrompt } from "./enhanced-prompt-service";
 
 function substitutePlaceholders(input: string, characterName: string, userName: string): string {
   return input
@@ -157,10 +159,16 @@ export { assertChatIntact };
 export class ConversationService {
   private readonly stClient: StClient;
   private readonly sessionTaskQueue: SessionTaskQueue;
+  private readonly resolvePromptMode: (accountId: string) => PromptMode;
 
-  public constructor(stClient: StClient, sessionTaskQueue: SessionTaskQueue) {
+  public constructor(
+    stClient: StClient,
+    sessionTaskQueue: SessionTaskQueue,
+    resolvePromptMode: (accountId: string) => PromptMode = () => "compact",
+  ) {
     this.stClient = stClient;
     this.sessionTaskQueue = sessionTaskQueue;
+    this.resolvePromptMode = resolvePromptMode;
   }
 
   public async sendMessage(params: {
@@ -228,12 +236,22 @@ export class ConversationService {
 
     const mvuContext = createMvuTurnContext(card, chat, settings.username);
     const xuanxiangPrompt = createXuanxiangTurnPrompt(card, mvuContext, settings.username);
+    const promptMode = this.resolvePromptMode(params.accountId);
+    const systemPrompt = promptMode === "enhanced"
+      ? buildEnhancedSystemPrompt({
+        card,
+        settings,
+        chat,
+        pendingUserText: params.text,
+        mvuStatData: mvuContext?.snapshot.stat_data as Record<string, unknown> | undefined,
+      })
+      : buildSystemPrompt(card, settings);
 
     const openAiMessages: Array<{ role: string; content: string; name?: string }> = [
-      { role: "system", content: buildSystemPrompt(card, settings) },
+      { role: "system", content: systemPrompt },
       ...(mvuContext?.prompt ? [{ role: "system", content: mvuContext.prompt }] : []),
       ...(xuanxiangPrompt ? [{ role: "system", content: xuanxiangPrompt }] : []),
-      ...toOpenAiMessages(getRecentMessages(chat), settings),
+      ...toOpenAiMessages(getRecentMessages(chat, promptMode === "enhanced" ? 48 : 24), settings),
       { role: "user", name: settings.username, content: normalizeModelInputText(params.text) },
     ];
 
@@ -349,12 +367,22 @@ export class ConversationService {
 
       const mvuContext = createMvuTurnContext(card, chat, settings.username);
       const xuanxiangPrompt = createXuanxiangTurnPrompt(card, mvuContext, settings.username);
+      const promptMode = this.resolvePromptMode(params.accountId);
+      const systemPrompt = promptMode === "enhanced"
+        ? buildEnhancedSystemPrompt({
+          card,
+          settings,
+          chat,
+          pendingUserText: params.includeUserMessage ? params.text : "",
+          mvuStatData: mvuContext?.snapshot.stat_data as Record<string, unknown> | undefined,
+        })
+        : buildSystemPrompt(card, settings);
 
       const openAiMessages: Array<{ role: string; content: string; name?: string }> = [
-        { role: "system", content: buildSystemPrompt(card, settings) },
+        { role: "system", content: systemPrompt },
         ...(mvuContext?.prompt ? [{ role: "system", content: mvuContext.prompt }] : []),
         ...(xuanxiangPrompt ? [{ role: "system", content: xuanxiangPrompt }] : []),
-        ...toOpenAiMessages(getRecentMessages(chat), settings),
+        ...toOpenAiMessages(getRecentMessages(chat, promptMode === "enhanced" ? 48 : 24), settings),
       ];
 
       if (params.includeUserMessage) {
