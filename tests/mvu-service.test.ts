@@ -17,6 +17,7 @@ function card(overrides: Partial<CharacterCardDetails> = {}): CharacterCardDetai
     personality: "",
     scenario: "",
     firstMes: "",
+    alternateGreetings: [],
     mesExample: "",
     mvu: null,
     xuanxiang: null,

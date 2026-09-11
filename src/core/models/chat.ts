@@ -91,6 +91,7 @@ export interface CharacterCardDetails {
   personality: string;
   scenario: string;
   firstMes: string;
+  alternateGreetings: string[];
   mesExample: string;
   mvu: MvuCardConfig | null;
   xuanxiang: XuanxiangCardConfig | null;

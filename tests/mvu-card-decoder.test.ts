@@ -51,6 +51,18 @@ describe("decodeCharacterCard MVU metadata", () => {
     expect(decoded.xuanxiang).toBeNull();
   });
 
+  it("decodes alternate greetings from V2/V3 card data", () => {
+    const decoded = decodeCharacterCard([{
+      avatar: "greetings.png",
+      first_mes: "默认开头",
+      data: {
+        alternate_greetings: ["备用一", 42, "备用二"],
+      },
+    }], "greetings.png");
+    expect(decoded.firstMes).toBe("默认开头");
+    expect(decoded.alternateGreetings).toEqual(["备用一", "备用二"]);
+  });
+
   it("resolves referenced xuanxiang rules without executing the card EJS", () => {
     const decoded = decodeCharacterCard([{
       avatar: "luo.png",

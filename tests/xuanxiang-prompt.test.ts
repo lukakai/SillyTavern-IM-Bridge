@@ -11,6 +11,7 @@ function card(): CharacterCardDetails {
     personality: "",
     scenario: "",
     firstMes: "",
+    alternateGreetings: [],
     mesExample: "",
     mvu: null,
     xuanxiang: {

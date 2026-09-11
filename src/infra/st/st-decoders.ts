@@ -196,6 +196,10 @@ export function decodeCharacterCard(payload: unknown, avatar: string): Character
     personality: typeof item.personality === "string" ? item.personality : (typeof data?.personality === "string" ? data.personality : ""),
     scenario: typeof item.scenario === "string" ? item.scenario : (typeof data?.scenario === "string" ? data.scenario : ""),
     firstMes: typeof item.first_mes === "string" ? item.first_mes : (typeof data?.first_mes === "string" ? data.first_mes : ""),
+    alternateGreetings: (Array.isArray(data?.alternate_greetings)
+      ? data.alternate_greetings
+      : Array.isArray(item.alternate_greetings) ? item.alternate_greetings : [])
+      .filter((greeting: unknown): greeting is string => typeof greeting === "string"),
     mesExample: typeof item.mes_example === "string" ? item.mes_example : (typeof data?.mes_example === "string" ? data.mes_example : ""),
     mvu: decodeMvuCardConfig(item),
     xuanxiang: decodeXuanxiangCardConfig(item),

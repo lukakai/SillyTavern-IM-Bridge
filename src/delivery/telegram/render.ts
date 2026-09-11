@@ -38,12 +38,22 @@ function formatDateTime(value: string | number | null): string {
   }).format(new Date(timestamp));
 }
 
-export function renderCharactersPage(characters: CharacterSummary[], page: number, pageSize: number): { text: string; keyboard: InlineKeyboard } {
+export function renderCharactersPage(
+  characters: CharacterSummary[],
+  page: number,
+  pageSize: number,
+  searchToken = "",
+  searchLabel = "",
+): { text: string; keyboard: InlineKeyboard } {
   const totalPages = Math.max(1, Math.ceil(characters.length / pageSize));
   const safePage = Math.min(Math.max(page, 0), totalPages - 1);
   const offset = safePage * pageSize;
   const pageItems = characters.slice(offset, offset + pageSize);
-  const lines = ["请选择角色：", ""];
+  const lines = [searchLabel ? `搜索结果：${searchLabel}` : "请选择角色：", ""];
+
+  if (pageItems.length === 0) {
+    lines.push("没有匹配的角色，请换个关键词。", "");
+  }
 
   pageItems.forEach((item, index) => {
     const number = offset + index + 1;
@@ -57,21 +67,61 @@ export function renderCharactersPage(characters: CharacterSummary[], page: numbe
 
   const keyboard = new InlineKeyboard();
   for (let index = 0; index < pageItems.length; index += 1) {
-    keyboard.text(String(offset + index + 1), `char:${safePage}:${index}`);
+    keyboard.text(
+      String(offset + index + 1),
+      searchToken ? `char:${searchToken}:${safePage}:${index}` : `char:${safePage}:${index}`,
+    );
     if ((index + 1) % 4 === 0 || index === pageItems.length - 1) {
       keyboard.row();
     }
   }
 
   if (safePage > 0) {
-    keyboard.text("上一页", `characters:${safePage - 1}`);
+    keyboard.text(
+      "上一页",
+      searchToken ? `characters:${searchToken}:${safePage - 1}` : `characters:${safePage - 1}`,
+    );
   }
   if (safePage < totalPages - 1) {
-    keyboard.text("下一页", `characters:${safePage + 1}`);
+    keyboard.text(
+      "下一页",
+      searchToken ? `characters:${searchToken}:${safePage + 1}` : `characters:${safePage + 1}`,
+    );
   }
 
   return {
     text: lines.join("\n").trim(),
+    keyboard,
+  };
+}
+
+export function renderCharacterModeSelection(characterName: string): { text: string; keyboard: InlineKeyboard } {
+  const keyboard = new InlineKeyboard()
+    .text("📚 查看历史会话", "char-mode:history")
+    .text("✨ 直接开始新会话", "char-mode:new");
+  return {
+    text: `已选择角色：${characterName}\n\n请选择接下来的方式：`,
+    keyboard,
+  };
+}
+
+export function renderGreetingSelection(
+  characterName: string,
+  greetings: string[],
+  index: number,
+): { text: string; keyboard: InlineKeyboard } {
+  const safeTotal = Math.max(1, greetings.length);
+  const safeIndex = Math.min(Math.max(Math.floor(index), 0), safeTotal - 1);
+  const keyboard = new InlineKeyboard();
+  if (safeTotal > 1) {
+    if (safeIndex > 0) keyboard.text("◀️", `greet:p:${safeIndex}`);
+    keyboard.text(`${safeIndex + 1} / ${safeTotal}`, `greet:i:${safeIndex}`);
+    if (safeIndex < safeTotal - 1) keyboard.text("▶️", `greet:n:${safeIndex}`);
+    keyboard.row();
+  }
+  keyboard.text("✅ 使用这个开头", `greet:u:${safeIndex}`);
+  return {
+    text: `角色：${characterName}\n请选择开场白（${safeIndex + 1} / ${safeTotal}）：\n\n${greetings[safeIndex] ?? ""}`.trim(),
     keyboard,
   };
 }
@@ -531,6 +581,8 @@ export function renderHelp(): string {
     "/compress - 压缩当前会话历史（保留最近 15 条）",
     "/help - 查看帮助",
     "",
+    "/chars [关键词] - 按角色名或头像搜索角色卡",
+    "选中角色后可查看历史会话，或直接选择开场白开始新会话。",
     "角色回复下方可按需重新生成、添加备选，并用左右按钮切换。",
     "编辑最新一条 Telegram 用户消息会同步到 ST，但不会自动生成；随后再点回复下方按钮。",
     "",

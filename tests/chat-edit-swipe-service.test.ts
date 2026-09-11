@@ -35,6 +35,7 @@ function service(initialChat: ChatMessage[], candidate?: ChatMessage) {
       personality: "",
       scenario: "",
       firstMes: "",
+      alternateGreetings: [],
       mesExample: "",
       mvu: null,
       xuanxiang: null,

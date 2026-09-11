@@ -11,6 +11,7 @@ import {
   decodeSwipeCallback,
   renderSwipeKeyboard,
 } from "../src/delivery/telegram/swipe";
+import { renderCharacterModeSelection, renderGreetingSelection, renderCharactersPage } from "../src/delivery/telegram/render";
 
 function assistant(): ChatMessage {
   return {
@@ -110,5 +111,33 @@ describe("Telegram swipe controls", () => {
       { inline_keyboard: [[{ text: "A", callback_data: "branch:A" }]] },
       renderSwipeKeyboard(9, 0, 1),
     )?.inline_keyboard).toHaveLength(2);
+  });
+
+  it("renders character mode and alternate greeting controls", () => {
+    const mode = renderCharacterModeSelection("测试角色");
+    expect(mode.text).toContain("已选择角色：测试角色");
+    expect(mode.keyboard.inline_keyboard.flat()).toEqual([
+      { text: "📚 查看历史会话", callback_data: "char-mode:history" },
+      { text: "✨ 直接开始新会话", callback_data: "char-mode:new" },
+    ]);
+
+    const greetings = renderGreetingSelection("测试角色", ["开头一", "开头二"], 1);
+    expect(greetings.text).toContain("开头二");
+    expect(greetings.keyboard.inline_keyboard.flat()).toEqual([
+      { text: "◀️", callback_data: "greet:p:1" },
+      { text: "2 / 2", callback_data: "greet:i:1" },
+      { text: "✅ 使用这个开头", callback_data: "greet:u:1" },
+    ]);
+  });
+
+  it("keeps search context in character pagination callbacks", () => {
+    const page = renderCharactersPage([
+      { name: "洛云希", avatar: "luo.png", dateLastChat: null, chatSize: null, dataSize: null },
+    ], 0, 8, "bG9v", "loo");
+    expect(page.text).toContain("搜索结果：loo");
+    expect(page.keyboard.inline_keyboard.flat()[0]).toEqual({
+      text: "1",
+      callback_data: "char:bG9v:0:0",
+    });
   });
 });

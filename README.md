@@ -32,6 +32,13 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
    - **网页方式**：SillyTavern 网页 → Extensions → Install Extension → 粘贴 `https://github.com/rinmashiro0529/SillyTavern-IM-Bridge-UI.git`。该方式装到当前登录 handle 的 `data/<handle>/extensions/`。
    - **服务端方式**：直接 `git clone` 到 `<ST 数据目录>/<handle>/extensions/SillyTavern-IM-Bridge-UI/`，多个 handle 各自一份。
 
+## Telegram 角色与新会话
+
+- `/chars` 显示角色卡；也可以直接输入 `/chars 关键词`，按角色名或头像搜索。
+- 点选角色后选择「查看历史会话」或「直接开始新会话」。
+- 直接新建时，如果角色卡包含多个 `alternate_greetings`，Telegram 会逐条显示开场白，使用左右按钮查看，点击「使用这个开头」后才创建会话；单开头角色卡会直接创建。
+- `/new` 仍可在已选角色上重复打开开场白选择。选择开场白不会修改角色卡原文件。
+
 ## 路径与端口
 
 - 路由前缀：`/api/plugins/st-im-bridge/*`

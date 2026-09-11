@@ -1,4 +1,5 @@
 ﻿import { Bot, Context } from "grammy";
+import { Buffer } from "node:buffer";
 import type { AppServices } from "../../plugin/build-services";
 import type { CharacterSummary, ChatSearchResult, ModelSummary } from "../../core/models/index";
 import { AppError } from "../../shared/errors/app-error";
@@ -7,6 +8,8 @@ import {
   COMPRESSION_MODEL_CALLBACK_PREFIX,
   groupModelsByProvider,
   renderCharactersPage,
+  renderCharacterModeSelection,
+  renderGreetingSelection,
   renderCompressProgress,
   renderCompressResult,
   renderCurrentState,
@@ -41,6 +44,18 @@ import {
 } from "./xuanxiang";
 
 type BotContext = Context;
+
+interface GreetingMenuState {
+  accountId: string;
+  chatId: string;
+  avatar: string;
+  characterName: string;
+  greetings: string[];
+  index: number;
+  messageIds: number[];
+}
+
+const greetingMenus = new Map<string, GreetingMenuState>();
 
 export interface BotRuntimeConfig {
   pageSize: number;
@@ -113,10 +128,96 @@ async function getCurrentCharacterChats(accountId: string, deps: AppServices): P
   };
 }
 
-async function replyCharacters(ctx: BotContext, deps: AppServices, botCtx: BotInstanceContext, page = 0): Promise<void> {
-  const characters = await getCharacters(deps);
-  const rendered = renderCharactersPage(characters, page, botCtx.config.pageSize);
+function encodeCallbackToken(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+function decodeCallbackToken(value: string): string | null {
+  try {
+    const decoded = Buffer.from(value, "base64url").toString("utf8");
+    return decoded.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function replyCharacters(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  page = 0,
+  search = "",
+): Promise<void> {
+  const allCharacters = await getCharacters(deps);
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const characters = normalizedSearch
+    ? allCharacters.filter((character) => `${character.name} ${character.avatar}`.toLocaleLowerCase().includes(normalizedSearch))
+    : allCharacters;
+  const searchToken = normalizedSearch ? encodeCallbackToken(search.trim()) : "";
+  const rendered = renderCharactersPage(characters, page, botCtx.config.pageSize, searchToken, search.trim());
   await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+}
+
+async function replyCharacterMode(ctx: BotContext, botCtx: BotInstanceContext, characterName: string): Promise<void> {
+  const rendered = renderCharacterModeSelection(characterName);
+  await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+}
+
+async function replyGreetingSelection(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  accountId: string,
+  index = 0,
+): Promise<void> {
+  const state = deps.sessionService.getActiveSession(accountId);
+  if (!state?.activeCharacterAvatar || !state.activeCharacterName) {
+    await replyText(ctx, botCtx, "当前还没有选择角色，请先使用 /chars。");
+    return;
+  }
+  const greetings = await deps.characterService.listCharacterOpenings(state.activeCharacterAvatar);
+  if (greetings.length <= 1) {
+    const chatId = ctx.chat?.id;
+    if (chatId) greetingMenus.delete(`${accountId}:${chatId}`);
+    await createNewChat(ctx, deps, botCtx, accountId, 0);
+    return;
+  }
+  const rendered = renderGreetingSelection(state.activeCharacterName, greetings, index);
+  const chatId = ctx.chat?.id;
+  if (!chatId) {
+    await replyText(ctx, botCtx, "无法确定 Telegram 会话，请重新使用 /new。", { priority: "critical" });
+    return;
+  }
+  const key = `${accountId}:${chatId}`;
+  const previous = greetingMenus.get(key);
+  const messageIds = await renderGreetingMenu(ctx, botCtx, chatId, rendered.text, rendered.keyboard, previous?.messageIds ?? []);
+  greetingMenus.set(key, {
+    accountId,
+    chatId: String(chatId),
+    avatar: state.activeCharacterAvatar,
+    characterName: state.activeCharacterName,
+    greetings,
+    index: Math.min(Math.max(Math.floor(index), 0), greetings.length - 1),
+    messageIds,
+  });
+}
+
+async function createNewChat(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  accountId: string,
+  openingIndex: number,
+): Promise<void> {
+  const state = deps.sessionService.getActiveSession(accountId);
+  if (!state?.activeCharacterAvatar || !state.activeCharacterName) {
+    await replyText(ctx, botCtx, "当前还没有选择角色，请先使用 /chars。");
+    return;
+  }
+  const created = await deps.characterService.createChatFromCharacter(state.activeCharacterAvatar, openingIndex);
+  deps.sessionService.setActiveSession(accountId, created.avatar, created.characterName, created.fileId);
+  const latestRecord = await deps.stClient.getLatestDialogueRecord(created.avatar, created.fileId);
+  await replyLongText(ctx, botCtx, renderLatestDialogue(created.characterName, created.fileId, latestRecord));
 }
 
 async function replyHistory(ctx: BotContext, deps: AppServices, accountId: string, botCtx: BotInstanceContext, page = 0): Promise<void> {
@@ -296,6 +397,37 @@ async function deleteMessagesBestEffort(
       // A stale progress message is preferable to losing the completed ST mutation.
     }
   }
+}
+
+async function renderGreetingMenu(
+  ctx: BotContext,
+  botCtx: BotInstanceContext,
+  chatId: string | number,
+  text: string,
+  keyboard: unknown,
+  existingMessageIds: number[],
+): Promise<number[]> {
+  const parts = splitTelegramText(text);
+  const messageIds: number[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const messageId = existingMessageIds[index];
+    const replyMarkup = index === parts.length - 1 ? keyboard : { inline_keyboard: [] };
+    if (messageId) {
+      await botCtx.sender.editText(ctx, chatId, messageId, parts[index], {
+        priority: "critical",
+        replyMarkup,
+      });
+      messageIds.push(messageId);
+    } else {
+      const sent = await botCtx.sender.sendText(ctx, chatId, parts[index], {
+        priority: "critical",
+        replyMarkup,
+      });
+      messageIds.push(sent.message_id);
+    }
+  }
+  await deleteMessagesBestEffort(ctx, botCtx, chatId, existingMessageIds.slice(parts.length));
+  return messageIds;
 }
 
 function storedXuanxiangBySwipe(
@@ -538,7 +670,8 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       return;
     }
 
-    await replyCharacters(ctx, deps, botCtx, 0);
+    const search = (ctx.message?.text ?? "").split(/\s+/).slice(1).join(" ").trim();
+    await replyCharacters(ctx, deps, botCtx, 0, search);
   });
 
   bot.command(["hist", "history"], async (ctx) => {
@@ -1060,10 +1193,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       return;
     }
 
-    const created = await deps.characterService.createChatFromCharacter(state.activeCharacterAvatar);
-    deps.sessionService.setActiveSession(accountId, created.avatar, created.characterName, created.fileId);
-    const latestRecord = await deps.stClient.getLatestDialogueRecord(created.avatar, created.fileId);
-    await replyLongText(ctx, botCtx, renderLatestDialogue(created.characterName, created.fileId, latestRecord));
+    await replyGreetingSelection(ctx, deps, botCtx, accountId, 0);
   });
 
   bot.on("callback_query:data", async (ctx) => {
@@ -1411,15 +1541,27 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     }
 
     if (data.startsWith("characters:")) {
+      const parts = data.split(":");
+      const hasSearch = parts.length >= 3;
+      const search = hasSearch ? decodeCallbackToken(parts[1] ?? "") ?? "" : "";
+      const page = Number(hasSearch ? parts[2] : parts[1]);
       await ctx.answerCallbackQuery();
-      await replyCharacters(ctx, deps, botCtx, Number(data.split(":")[1] ?? 0));
+      await replyCharacters(ctx, deps, botCtx, Number.isFinite(page) ? page : 0, search);
       return;
     }
 
     if (data.startsWith("char:")) {
-      const [, pageToken, indexToken] = data.split(":");
-      const characters = await getCharacters(deps);
-      const character = characters[Number(pageToken) * botCtx.config.pageSize + Number(indexToken)];
+      const parts = data.split(":");
+      const hasSearch = parts.length >= 4;
+      const search = hasSearch ? decodeCallbackToken(parts[1] ?? "") ?? "" : "";
+      const page = Number(hasSearch ? parts[2] : parts[1]);
+      const index = Number(hasSearch ? parts[3] : parts[2]);
+      const allCharacters = await getCharacters(deps);
+      const normalizedSearch = search.trim().toLocaleLowerCase();
+      const characters = normalizedSearch
+        ? allCharacters.filter((character) => `${character.name} ${character.avatar}`.toLocaleLowerCase().includes(normalizedSearch))
+        : allCharacters;
+      const character = characters[(Number.isFinite(page) ? page : 0) * botCtx.config.pageSize + index];
       await ctx.answerCallbackQuery();
 
       if (!character) {
@@ -1428,8 +1570,68 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       }
 
       deps.sessionService.setActiveCharacter(accountId, character.avatar, character.name);
-      await replyText(ctx, botCtx, `已选择角色：${character.name}`);
+      await replyCharacterMode(ctx, botCtx, character.name);
+      return;
+    }
+
+    if (data === "char-mode:history") {
+      await ctx.answerCallbackQuery();
       await replyHistory(ctx, deps, accountId, botCtx, 0);
+      return;
+    }
+
+    if (data === "char-mode:new") {
+      await ctx.answerCallbackQuery();
+      await replyGreetingSelection(ctx, deps, botCtx, accountId, 0);
+      return;
+    }
+
+    if (data.startsWith("greet:")) {
+      const [, action, indexToken] = data.split(":");
+      const currentIndex = Number(indexToken ?? 0);
+      if (!Number.isInteger(currentIndex) || currentIndex < 0) {
+        await ctx.answerCallbackQuery({ text: "开场白选择已失效" });
+        return;
+      }
+      const greetingChatId = ctx.chat?.id;
+      const greetingMenu = greetingChatId ? greetingMenus.get(`${accountId}:${greetingChatId}`) : undefined;
+      const activeGreetingState = deps.sessionService.getActiveSession(accountId);
+      if (!greetingChatId) {
+        await ctx.answerCallbackQuery({ text: "开场白选择已失效" });
+        return;
+      }
+      if (
+        !greetingMenu
+        || !activeGreetingState?.activeCharacterAvatar
+        || greetingMenu.avatar !== activeGreetingState.activeCharacterAvatar
+        || greetingMenu.index !== currentIndex
+        || Number(ctx.callbackQuery.message?.message_id ?? 0) !== Number(greetingMenu.messageIds.at(-1) ?? 0)
+      ) {
+        await ctx.answerCallbackQuery({ text: "开场白选择已失效，请重新使用 /new" });
+        return;
+      }
+      if (action === "p" || action === "n") {
+        const targetIndex = action === "p" ? currentIndex - 1 : currentIndex + 1;
+        if (targetIndex < 0 || targetIndex >= greetingMenu.greetings.length) {
+          await ctx.answerCallbackQuery({ text: "已经没有更多开场白了" });
+          return;
+        }
+        await ctx.answerCallbackQuery();
+        await replyGreetingSelection(ctx, deps, botCtx, accountId, targetIndex);
+        return;
+      }
+      if (action === "i") {
+        await ctx.answerCallbackQuery({ text: `第 ${currentIndex + 1} / ${greetingMenu.greetings.length} 条开场白` });
+        return;
+      }
+      if (action === "u") {
+        await ctx.answerCallbackQuery({ text: "正在创建新会话" });
+        greetingMenus.delete(`${accountId}:${greetingChatId}`);
+        await deleteMessagesBestEffort(ctx, botCtx, greetingChatId, greetingMenu.messageIds);
+        await createNewChat(ctx, deps, botCtx, accountId, currentIndex);
+        return;
+      }
+      await replyText(ctx, botCtx, "开场白选择已失效，请重新使用 /new。", { priority: "critical" });
       return;
     }
 
