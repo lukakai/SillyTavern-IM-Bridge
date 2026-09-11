@@ -65,7 +65,7 @@ open -na "Google Chrome" --args \
   --app="http://UNRAID-IP:8567/"
 ```
 
-在这个独立窗口中完成 Basic Auth／SillyTavern 登录并启用中继。确认可用后再考虑用同一个 profile 启动 headless Chromium；首次登录和排错阶段建议先保持可见窗口。
+在这个独立窗口中完成 Basic Auth／SillyTavern 登录并启用中继。配套 UI 仓库的 `relay-runner/` 还提供了使用系统 Chrome、macOS 钥匙串和独立 profile 的无头启动器；详见 [UI 扩展说明](https://github.com/lukakai/SillyTavern-IM-Bridge-UI#mac-mini-无头运行)。首次登录和排错阶段仍建议先使用可见窗口。
 
 可选超时环境变量：`WEB_RELAY_JOB_TIMEOUT_MS`（默认 15 分钟）、`WEB_RELAY_PRESENCE_TIMEOUT_MS` 和 `WEB_RELAY_LEASE_TIMEOUT_MS`（默认均为 2 分钟）。
 
