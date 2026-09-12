@@ -32,6 +32,8 @@ const snapshot: GlobalSettingsSnapshot = {
   currentPreset: "剧情预设",
   presets: ["简洁预设", "剧情预设", "长篇预设"],
   currentModel: "model-a",
+  presetProfiles: [],
+  promptLayout: [],
   prompts: [
     prompt("heading-story", "━━━━ 剧情控制 ━━━━", true, { toggleable: false, empty: true }),
     prompt("group-style", "文风", true, { toggleable: false, empty: true }),
@@ -56,6 +58,41 @@ describe("Telegram global settings menus", () => {
     expect(sections[0].groups[0].entries.map(entry => entry.identifier)).toEqual(["style-a", "style-b"]);
     expect(sections.flatMap(section => section.groups).flatMap(group => group.entries))
       .not.toContainEqual(expect.objectContaining({ identifier: "marker" }));
+  });
+
+  it("uses a preset panel layout and renders its model profiles above all web categories", () => {
+    const panelSnapshot: GlobalSettingsSnapshot = {
+      ...snapshot,
+      presetProfiles: [
+        { id: "hakimi", label: "哈基米", active: false },
+        { id: "claude46", label: "克4.6", active: true },
+      ],
+      promptLayout: [{
+        name: "高频",
+        groups: [
+          { name: "文风", identifiers: ["style-a", "style-b"] },
+          { name: "情感基调", identifiers: ["extra-a"] },
+        ],
+      }, {
+        name: "修正",
+        groups: [{ name: "正文纠偏", identifiers: ["format-a"] }],
+      }],
+    };
+
+    const grouped = groupGlobalPrompts(panelSnapshot.prompts, panelSnapshot.promptLayout);
+    expect(grouped.map(section => section.name)).toEqual(["高频", "修正"]);
+    expect(grouped[0].groups.map(group => group.name)).toEqual(["文风", "情感基调"]);
+
+    const categories = renderPromptSections(panelSnapshot, 0, 8);
+    expect(categories.text).toContain("预设内模型方案：克4.6");
+    expect(categories.text).toContain("高频 · 文风 (1/2)");
+    expect(categories.text).toContain("修正 · 正文纠偏 (1/1)");
+    expect(categories.keyboard.inline_keyboard.flat()).toContainEqual({ text: "哈基米", callback_data: "gpmode:s:0" });
+    expect(categories.keyboard.inline_keyboard.flat()).toContainEqual({ text: "✅ 克4.6", callback_data: "gpmode:s:1" });
+    expect(categories.keyboard.inline_keyboard.flat()).toContainEqual({ text: "1", callback_data: "gprompt:group:0:0:0" });
+
+    const options = renderPromptOptions(panelSnapshot, 0, 0, 0, 8)!;
+    expect(options.keyboard.inline_keyboard.flat()).toContainEqual({ text: "⬅️ 返回分类", callback_data: "gprompt:sections:0" });
   });
 
   it("renders paged profile and preset selectors using compact index callbacks", () => {

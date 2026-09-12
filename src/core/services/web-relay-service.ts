@@ -6,6 +6,7 @@ export type WebRelayControlOperation =
   | "settings_snapshot"
   | "settings_select_profile"
   | "settings_select_preset"
+  | "settings_select_preset_profile"
   | "settings_select_model"
   | "settings_set_prompt_entries"
   | "settings_undo";
@@ -19,6 +20,22 @@ export interface GlobalPromptEntry {
   empty: boolean;
 }
 
+export interface GlobalPresetProfile {
+  id: string;
+  label: string;
+  active: boolean;
+}
+
+export interface GlobalPromptLayoutGroup {
+  name: string;
+  identifiers: string[];
+}
+
+export interface GlobalPromptLayoutSection {
+  name: string;
+  groups: GlobalPromptLayoutGroup[];
+}
+
 export interface GlobalSettingsSnapshot {
   currentProfile: string | null;
   profiles: string[];
@@ -26,6 +43,8 @@ export interface GlobalSettingsSnapshot {
   presets: string[];
   currentModel: string | null;
   prompts: GlobalPromptEntry[];
+  presetProfiles: GlobalPresetProfile[];
+  promptLayout: GlobalPromptLayoutSection[];
   undoAvailable: boolean;
   undoSavedAt: string | null;
 }
@@ -130,6 +149,49 @@ function settingsStringList(value: unknown, limit: number): string[] {
   });
 }
 
+function decodePresetProfiles(value: unknown): GlobalPresetProfile[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 50) throw invalidSettingsResult();
+  return value.map((item): GlobalPresetProfile => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw invalidSettingsResult();
+    const profile = item as Record<string, unknown>;
+    const id = optionalText(profile.id);
+    const label = optionalText(profile.label);
+    if (!id || !label || id.length > 200 || label.length > 200 || typeof profile.active !== "boolean") {
+      throw invalidSettingsResult();
+    }
+    return { id, label, active: profile.active };
+  });
+}
+
+function decodePromptLayout(value: unknown): GlobalPromptLayoutSection[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 50) throw invalidSettingsResult();
+  let groupCount = 0;
+  let identifierCount = 0;
+  return value.map((item): GlobalPromptLayoutSection => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw invalidSettingsResult();
+    const section = item as Record<string, unknown>;
+    const name = optionalText(section.name);
+    if (!name || name.length > 200 || !Array.isArray(section.groups)) throw invalidSettingsResult();
+    groupCount += section.groups.length;
+    if (groupCount > 250) throw invalidSettingsResult();
+    const groups = section.groups.map((groupItem): GlobalPromptLayoutGroup => {
+      if (!groupItem || typeof groupItem !== "object" || Array.isArray(groupItem)) throw invalidSettingsResult();
+      const group = groupItem as Record<string, unknown>;
+      const groupName = optionalText(group.name);
+      if (!groupName || groupName.length > 200 || !Array.isArray(group.identifiers)) throw invalidSettingsResult();
+      const identifiers = settingsStringList(group.identifiers, 2_000);
+      identifierCount += identifiers.length;
+      if (identifierCount > 2_000 || identifiers.some(identifier => identifier.length > 200)) {
+        throw invalidSettingsResult();
+      }
+      return { name: groupName, identifiers };
+    });
+    return { name, groups };
+  });
+}
+
 function normalizeControlPayload(
   operation: WebRelayControlOperation,
   value: Record<string, unknown> | undefined,
@@ -197,6 +259,8 @@ function decodeGlobalSettingsSnapshot(value: unknown): GlobalSettingsSnapshot {
     presets: settingsStringList(input.presets, 500),
     currentModel: nullableSettingsText(input.currentModel),
     prompts,
+    presetProfiles: decodePresetProfiles(input.presetProfiles),
+    promptLayout: decodePromptLayout(input.promptLayout),
     undoAvailable: input.undoAvailable,
     undoSavedAt: nullableSettingsText(input.undoSavedAt),
   };

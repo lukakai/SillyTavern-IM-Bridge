@@ -7,6 +7,11 @@ const globalSettingsResult = {
   currentPreset: "剧情预设",
   presets: ["剧情预设"],
   currentModel: "model-a",
+  presetProfiles: [{ id: "claude46", label: "克4.6", active: true }],
+  promptLayout: [{
+    name: "高频",
+    groups: [{ name: "文风", identifiers: ["story-style"] }],
+  }],
   prompts: [{
     identifier: "story-style",
     name: "叙事风格",
@@ -139,6 +144,24 @@ describe("WebRelayService", () => {
     });
     service.complete("account", "worker", job!.id, { result: globalSettingsResult });
 
+    await expect(execution).resolves.toEqual(globalSettingsResult);
+  });
+
+  it("delivers preset-internal model profile selections", async () => {
+    const service = createService();
+    service.heartbeat("account", { workerId: "worker", relayVersion: "1.2.0" });
+    const execution = service.executeControl({
+      accountId: "account",
+      operation: "settings_select_preset_profile",
+      payload: { name: "claude46" },
+    });
+
+    const job = await service.poll("account", { workerId: "worker" }, 0);
+    expect(job).toMatchObject({
+      operation: "settings_select_preset_profile",
+      controlPayload: { name: "claude46" },
+    });
+    service.complete("account", "worker", job!.id, { result: globalSettingsResult });
     await expect(execution).resolves.toEqual(globalSettingsResult);
   });
 

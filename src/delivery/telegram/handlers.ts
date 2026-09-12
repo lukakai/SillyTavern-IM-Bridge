@@ -2381,6 +2381,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     if (
       data.startsWith("gapi:")
       || data.startsWith("gpreset:")
+      || data.startsWith("gpmode:")
       || data.startsWith("gprompt:")
       || data.startsWith("gsettings:")
     ) {
@@ -2452,6 +2453,29 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
           await editGlobalSettingsMessage(ctx, botCtx, rendered);
           return;
         }
+        if (data.startsWith("gpmode:s:")) {
+          const index = Number(data.split(":")[2]);
+          const snapshot = await getGlobalSettings(accountId, deps);
+          const profile = snapshot.presetProfiles[index];
+          if (!profile) {
+            await ctx.answerCallbackQuery({ text: "预设内模型方案已经变化" });
+            return;
+          }
+          if (profile.active) {
+            await ctx.answerCallbackQuery({ text: "已经是当前预设内模型方案" });
+            return;
+          }
+          await ctx.answerCallbackQuery({ text: "正在切换预设内模型方案" });
+          const updated = await deps.webRelayService.executeControl({
+            accountId,
+            operation: "settings_select_preset_profile",
+            payload: { name: profile.id },
+          });
+          const rendered = renderPromptSections(updated, 0, botCtx.config.pageSize);
+          rendered.text = `✅ 已全局切换预设内模型方案：${profile.label}\n\n${rendered.text}`;
+          await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
         if (data.startsWith("gprompt:sections:")) {
           const page = Number(data.split(":")[2] ?? 0);
           await ctx.answerCallbackQuery();
@@ -2508,7 +2532,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
           const optionIndex = Number(optionToken);
           const enabled = enabledToken === "1";
           const snapshot = await getGlobalSettings(accountId, deps);
-          const entry = groupGlobalPrompts(snapshot.prompts)[sectionIndex]?.groups[groupIndex]?.entries[optionIndex];
+          const entry = groupGlobalPrompts(snapshot.prompts, snapshot.promptLayout)[sectionIndex]?.groups[groupIndex]?.entries[optionIndex];
           if (!entry) {
             await ctx.answerCallbackQuery({ text: "预设选项已经变化" });
             return;
@@ -2548,7 +2572,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
           const page = Number(pageToken);
           const enabled = enabledToken === "1";
           const snapshot = await getGlobalSettings(accountId, deps);
-          const group = groupGlobalPrompts(snapshot.prompts)[sectionIndex]?.groups[groupIndex];
+          const group = groupGlobalPrompts(snapshot.prompts, snapshot.promptLayout)[sectionIndex]?.groups[groupIndex];
           if (!group) {
             await ctx.answerCallbackQuery({ text: "预设分组已经变化" });
             return;

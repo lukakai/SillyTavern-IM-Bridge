@@ -1,5 +1,9 @@
 import { InlineKeyboard } from "grammy";
-import type { GlobalPromptEntry, GlobalSettingsSnapshot } from "../../core/services/web-relay-service";
+import type {
+  GlobalPromptEntry,
+  GlobalPromptLayoutSection,
+  GlobalSettingsSnapshot,
+} from "../../core/services/web-relay-service";
 
 export interface PromptMenuGroup {
   name: string;
@@ -42,7 +46,35 @@ function ensureGroup(section: PromptMenuSection, name: string): PromptMenuGroup 
   return group;
 }
 
-export function groupGlobalPrompts(prompts: GlobalPromptEntry[]): PromptMenuSection[] {
+function groupPromptsFromLayout(
+  prompts: GlobalPromptEntry[],
+  layout: GlobalPromptLayoutSection[],
+): PromptMenuSection[] {
+  const promptsById = new Map(prompts.filter(prompt => prompt.toggleable).map(prompt => [prompt.identifier, prompt]));
+  const used = new Set<string>();
+  return layout
+    .map(section => ({
+      name: section.name,
+      groups: section.groups.map(group => ({
+        name: group.name,
+        entries: group.identifiers.flatMap((identifier) => {
+          const prompt = promptsById.get(identifier);
+          if (!prompt || used.has(identifier)) return [];
+          used.add(identifier);
+          return [prompt];
+        }),
+      })).filter(group => group.entries.length > 0),
+    }))
+    .filter(section => section.groups.length > 0);
+}
+
+export function groupGlobalPrompts(
+  prompts: GlobalPromptEntry[],
+  layout: GlobalPromptLayoutSection[] = [],
+): PromptMenuSection[] {
+  const custom = groupPromptsFromLayout(prompts, layout);
+  if (custom.length > 0) return custom;
+
   const sections: PromptMenuSection[] = [];
   let section: PromptMenuSection | null = null;
   let group: PromptMenuGroup | null = null;
@@ -72,6 +104,18 @@ export function groupGlobalPrompts(prompts: GlobalPromptEntry[]): PromptMenuSect
     .filter((item) => item.groups.length > 0);
 }
 
+function promptSections(snapshot: GlobalSettingsSnapshot): PromptMenuSection[] {
+  return groupGlobalPrompts(snapshot.prompts, snapshot.promptLayout);
+}
+
+function hasCustomPromptLayout(snapshot: GlobalSettingsSnapshot): boolean {
+  return snapshot.promptLayout.length > 0 && groupPromptsFromLayout(snapshot.prompts, snapshot.promptLayout).length > 0;
+}
+
+function activePresetProfile(snapshot: GlobalSettingsSnapshot): string | null {
+  return snapshot.presetProfiles.find(profile => profile.active)?.label ?? null;
+}
+
 function pageBounds(total: number, page: number, pageSize: number): {
   safePage: number;
   totalPages: number;
@@ -93,11 +137,16 @@ function navigation(
 }
 
 function settingsHeader(snapshot: GlobalSettingsSnapshot): string[] {
-  return [
+  const lines = [
     `连接配置：${snapshot.currentProfile ? displayName(snapshot.currentProfile) : "未选择"}`,
     `聊天预设：${snapshot.currentPreset ? displayName(snapshot.currentPreset) : "未知"}`,
     `当前模型：${snapshot.currentModel ? displayName(snapshot.currentModel) : "未知"}`,
   ];
+  const presetProfile = activePresetProfile(snapshot);
+  if (snapshot.presetProfiles.length > 0) {
+    lines.push(`预设内模型方案：${presetProfile ? displayName(presetProfile) : "自定义组合"}`);
+  }
+  return lines;
 }
 
 export function renderGlobalProfilePage(
@@ -154,20 +203,43 @@ export function renderPromptSections(
   page: number,
   pageSize: number,
 ): { text: string; keyboard: InlineKeyboard } {
-  const sections = groupGlobalPrompts(snapshot.prompts);
-  const { safePage, totalPages, offset } = pageBounds(sections.length, page, pageSize);
-  const items = sections.slice(offset, offset + pageSize);
-  const lines = [`当前预设：${snapshot.currentPreset ? displayName(snapshot.currentPreset) : "未知"}`, "", "请选择选项分类：", ""];
-  items.forEach((section, index) => {
-    const counts = countEntries(section.groups.flatMap(group => group.entries));
-    lines.push(`${offset + index + 1}. ${displayName(section.name)} (${counts.enabled}/${counts.total})`);
+  const sections = promptSections(snapshot);
+  const customLayout = hasCustomPromptLayout(snapshot);
+  const categories = customLayout
+    ? sections.flatMap((section, sectionIndex) => section.groups.map((group, groupIndex) => ({
+      name: group.name,
+      zone: section.name,
+      entries: group.entries,
+      callback: `gprompt:group:${sectionIndex}:${groupIndex}:0`,
+    })))
+    : sections.map((section, sectionIndex) => ({
+      name: section.name,
+      zone: null,
+      entries: section.groups.flatMap(group => group.entries),
+      callback: `gprompt:section:${sectionIndex}:0`,
+    }));
+  const { safePage, totalPages, offset } = pageBounds(categories.length, page, pageSize);
+  const items = categories.slice(offset, offset + pageSize);
+  const lines = [`当前预设：${snapshot.currentPreset ? displayName(snapshot.currentPreset) : "未知"}`];
+  if (snapshot.presetProfiles.length > 0) {
+    lines.push(`预设内模型方案：${activePresetProfile(snapshot) ?? "自定义组合"}`);
+  }
+  lines.push("", "请选择选项分类：", "");
+  items.forEach((category, index) => {
+    const counts = countEntries(category.entries);
+    const zone = category.zone ? `${displayName(category.zone)} · ` : "";
+    lines.push(`${offset + index + 1}. ${zone}${displayName(category.name)} (${counts.enabled}/${counts.total})`);
   });
   if (items.length === 0) lines.push("当前预设中没有可通过 Telegram 切换的自定义条目。");
   lines.push("", `第 ${safePage + 1} / ${totalPages} 页`);
 
   const keyboard = new InlineKeyboard();
-  items.forEach((_section, index) => {
-    keyboard.text(String(offset + index + 1), `gprompt:section:${offset + index}:0`);
+  snapshot.presetProfiles.forEach((profile, index) => {
+    keyboard.text(`${profile.active ? "✅ " : ""}${displayName(profile.label, 24)}`, `gpmode:s:${index}`);
+    if ((index + 1) % 2 === 0 || index === snapshot.presetProfiles.length - 1) keyboard.row();
+  });
+  items.forEach((category, index) => {
+    keyboard.text(String(offset + index + 1), category.callback);
     if ((index + 1) % 4 === 0 || index === items.length - 1) keyboard.row();
   });
   keyboard.text("⬅️ 返回预设", "gpreset:p:0").row();
@@ -181,7 +253,7 @@ export function renderPromptGroups(
   page: number,
   pageSize: number,
 ): { text: string; keyboard: InlineKeyboard } | null {
-  const sections = groupGlobalPrompts(snapshot.prompts);
+  const sections = promptSections(snapshot);
   const section = sections[sectionIndex];
   if (!section) return null;
   const { safePage, totalPages, offset } = pageBounds(section.groups.length, page, pageSize);
@@ -216,7 +288,7 @@ export function renderPromptOptions(
   page: number,
   pageSize: number,
 ): { text: string; keyboard: InlineKeyboard } | null {
-  const sections = groupGlobalPrompts(snapshot.prompts);
+  const sections = promptSections(snapshot);
   const section = sections[sectionIndex];
   const group = section?.groups[groupIndex];
   if (!section || !group) return null;
@@ -242,7 +314,10 @@ export function renderPromptOptions(
     .text("全部启用", `gprompt:bq:${sectionIndex}:${groupIndex}:${safePage}:1`)
     .text("全部禁用", `gprompt:bq:${sectionIndex}:${groupIndex}:${safePage}:0`)
     .row();
-  keyboard.text("⬅️ 返回分组", `gprompt:section:${sectionIndex}:0`).row();
+  keyboard.text(
+    hasCustomPromptLayout(snapshot) ? "⬅️ 返回分类" : "⬅️ 返回分组",
+    hasCustomPromptLayout(snapshot) ? "gprompt:sections:0" : `gprompt:section:${sectionIndex}:0`,
+  ).row();
   navigation(keyboard, safePage, totalPages, target => `gprompt:group:${sectionIndex}:${groupIndex}:${target}`);
   return { text: lines.join("\n"), keyboard };
 }
@@ -254,7 +329,7 @@ export function renderPromptChangePreview(
   page: number,
   optionIndex: number,
 ): { text: string; keyboard: InlineKeyboard } | null {
-  const group = groupGlobalPrompts(snapshot.prompts)[sectionIndex]?.groups[groupIndex];
+  const group = promptSections(snapshot)[sectionIndex]?.groups[groupIndex];
   const entry = group?.entries[optionIndex];
   if (!group || !entry) return null;
   const nextEnabled = !entry.enabled;
@@ -282,7 +357,7 @@ export function renderPromptBulkPreview(
   page: number,
   enabled: boolean,
 ): { text: string; keyboard: InlineKeyboard } | null {
-  const section = groupGlobalPrompts(snapshot.prompts)[sectionIndex];
+  const section = promptSections(snapshot)[sectionIndex];
   const group = section?.groups[groupIndex];
   if (!section || !group) return null;
   const keyboard = new InlineKeyboard()
