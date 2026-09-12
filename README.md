@@ -16,6 +16,7 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 - 每条 Telegram 角色回复提供 SillyTavern Swipe 控件：可按需重新生成当前回复、追加最多 20 条备选，并用左右按钮切换；正文、生成元数据、MVU 快照和 `<xuanxiang>` 交互状态会随所选 Swipe 一起同步回酒馆。普通角色卡同样可用。
 - 支持编辑当前会话最新一轮的 Telegram 用户消息。编辑只同步到 SillyTavern 并保留当前回复，不会立即调用模型；随后点击“重新生成”或“生成备选”时，模型会使用编辑后的内容。更早的 Telegram 消息会被拒绝，避免历史定位和状态错位。
 - 新增 `/prompt web` 网页完整模式：Telegram 只提交生成任务，由一个已登录的 SillyTavern 浏览器页面调用原生 `Generate()`。因此会使用该页面当前的预设、世界书、Persona、Regex、生成拦截器及 MVU 等前端扩展；中继离线时明确报错，不会静默退回简化模式。
+- 新增独立世界书管理：`/worldbook` 浏览或搜索世界书和条目，可修改条目正文、启用或禁用条目；所有写入都要二次确认、检查并发修改，并先生成可直接导入 SillyTavern 的 JSON 备份。不提供删除条目或整本覆盖。
 
 ## 安装
 
@@ -45,6 +46,17 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 - `/prompt` 查看当前模式及网页中继状态；`/prompt compact` 使用原有简化提示词（默认），`/prompt enhanced` 启用安全增强模式，`/prompt web` 启用网页完整模式。模式按账号保存，重启后仍然有效。
 - 增强模式会读取角色卡的 `system_prompt`、`post_history_instructions`、depth prompt、当前 Persona，以及角色卡内嵌世界书的常驻和关键词条目，并把对话窗口从 24 条提高到 48 条。
 - 世界书支持主/次关键词、匹配大小写与完整单词、扫描深度、概率、互斥分组、有限递归、插入顺序和字符预算。为保证 Unraid 后台运行安全稳定，不执行 EJS/JavaScript；含动态代码的条目会跳过。因此增强模式接近文本卡的网页体验，但不宣称与 SillyTavern 前端完全一致。
+
+## Telegram 世界书管理
+
+- 世界书管理命令只对 SillyTavern 管理员账号所属的 Bot 开放，Telegram 用户仍须在该 Bot 的绑定白名单中。
+- `/worldbook` 查看独立世界书；`/worldbook 关键词` 按名称搜索。
+- 选择世界书后使用 `/wbfind 关键词` 搜索条目名称、关键词和正文。
+- 条目详情提供「编辑正文」和「启用/禁用」。编辑正文时必须回复 Bot 指定的提示消息，随后再点「确认保存」。
+- `/wbcancel` 随时退出编辑，未确认的草稿只保存在内存中，不会写入 SillyTavern。
+- 保存前会重新读取世界书并比较 SHA-256 修订号；若网页端已修改，Telegram 保存会被拒绝，避免覆盖较新的内容。
+- 每本世界书保留最近 20 个备份，位于 `data/world-book-backups/`。备份保持标准世界书 JSON 结构，可以直接从 SillyTavern 导入。
+- 当前只管理独立世界书，不修改角色卡内嵌世界书，不支持删除条目、批量覆盖、关键词和高级触发参数编辑。
 
 ### 网页完整模式
 

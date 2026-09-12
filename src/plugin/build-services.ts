@@ -1,3 +1,4 @@
+import path from "node:path";
 import { CharacterService } from "../core/services/character-service";
 import { ChatEditService } from "../core/services/chat-edit-service";
 import { CompressionService } from "../core/services/compression-service";
@@ -9,6 +10,7 @@ import { AccountConfigService } from "../core/services/account-config-service";
 import { BindCodeService } from "../core/services/bind-code-service";
 import { BotManager } from "../core/services/bot-manager";
 import { WebRelayService } from "../core/services/web-relay-service";
+import { WorldBookAdminService } from "../core/services/world-book-admin-service";
 import { CompressionClient } from "../infra/llm/compression-client";
 import { createSqlitePersistence } from "../infra/persistence/sqlite-store";
 import { StClient } from "../infra/st/st-client";
@@ -44,6 +46,7 @@ export interface AppServices {
   accountConfigService: AccountConfigService;
   bindCodeService: BindCodeService;
   webRelayService: WebRelayService;
+  worldBookAdminService: WorldBookAdminService;
   botManager: BotManager;
   repositories: ReturnType<typeof createSqlitePersistence>;
   sseRegistry: SseRegistry;
@@ -70,6 +73,10 @@ export function buildServices(): AppServices {
     leaseTimeoutMs: runtime.webRelayLeaseTimeoutMs,
   });
   const sessionService = new SessionService(repositories.sessionRepository);
+  const worldBookAdminService = new WorldBookAdminService(
+    stClient,
+    path.join(runtime.pluginRoot, "data", "world-book-backups"),
+  );
   const sessionTaskQueue = new SessionTaskQueue();
   const conversationService = new ConversationService(
     stClient,
@@ -112,6 +119,7 @@ export function buildServices(): AppServices {
     accountConfigService,
     bindCodeService,
     webRelayService,
+    worldBookAdminService,
     repositories,
     sseRegistry: new SseRegistry(),
   };

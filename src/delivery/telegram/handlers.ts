@@ -1,7 +1,14 @@
 ﻿import { Bot, Context } from "grammy";
 import { Buffer } from "node:buffer";
 import type { AppServices } from "../../plugin/build-services";
-import type { CharacterSummary, ChatSearchResult, ModelSummary } from "../../core/models/index";
+import type {
+  CharacterSummary,
+  ChatSearchResult,
+  ModelSummary,
+  WorldBookEntryView,
+  WorldBookSummary,
+  WorldBookView,
+} from "../../core/models/index";
 import { AppError } from "../../shared/errors/app-error";
 import { buildSessionKey, createRequestId } from "../../shared/utils/ids";
 import {
@@ -42,6 +49,12 @@ import {
   renderXuanxiangPanel,
   type StoredXuanxiang,
 } from "./xuanxiang";
+import {
+  renderWorldBookChangePreview,
+  renderWorldBookEntriesPage,
+  renderWorldBookEntry,
+  renderWorldBookPage,
+} from "./world-book";
 
 type BotContext = Context;
 
@@ -56,6 +69,32 @@ interface GreetingMenuState {
 }
 
 const greetingMenus = new Map<string, GreetingMenuState>();
+
+interface WorldBookPendingChange {
+  entryRef: string;
+  expectedRevision: string;
+  content?: string;
+  enabled?: boolean;
+}
+
+interface WorldBookMenuState {
+  accountId: string;
+  chatId: number;
+  userId: string;
+  books: WorldBookSummary[];
+  bookSearch: string;
+  currentBook: WorldBookView | null;
+  entrySearch: string;
+  selectedEntryRef: string | null;
+  messageId: number | null;
+  editPromptMessageId: number | null;
+  pending: WorldBookPendingChange | null;
+  saving: boolean;
+  expiresAt: number;
+}
+
+const worldBookMenus = new Map<string, WorldBookMenuState>();
+const WORLD_BOOK_MENU_TTL_MS = 30 * 60 * 1000;
 
 export interface BotRuntimeConfig {
   pageSize: number;
@@ -92,6 +131,17 @@ async function requireAuthorized(ctx: BotContext, deps: AppServices, botCtx: Bot
 
 function getAccountId(_userId: string, _deps: AppServices, botCtx: BotInstanceContext): string {
   return botCtx.accountId;
+}
+
+async function requireWorldBookAdmin(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  accountId: string,
+): Promise<boolean> {
+  if (deps.repositories.accountRepository.getSTUserAccount(accountId)?.role === "admin") return true;
+  await replyText(ctx, botCtx, "只有 SillyTavern 管理员账号绑定的 Bot 可以管理世界书。", { priority: "critical" });
+  return false;
 }
 
 async function getCharacters(deps: AppServices): Promise<CharacterSummary[]> {
@@ -323,6 +373,261 @@ async function replyLongText(ctx: BotContext, botCtx: BotInstanceContext, text: 
   const parts = splitTelegramText(text);
   for (const part of parts) {
     await replyText(ctx, botCtx, part, options);
+  }
+}
+
+function worldBookMenuKey(accountId: string, chatId: number, userId: string): string {
+  return `${accountId}:${chatId}:${userId}`;
+}
+
+function getWorldBookMenu(accountId: string, chatId: number | undefined, userId: string): WorldBookMenuState | null {
+  if (!chatId) return null;
+  const key = worldBookMenuKey(accountId, chatId, userId);
+  const state = worldBookMenus.get(key);
+  if (!state) return null;
+  if (state.expiresAt <= Date.now()) {
+    worldBookMenus.delete(key);
+    return null;
+  }
+  state.expiresAt = Date.now() + WORLD_BOOK_MENU_TTL_MS;
+  return state;
+}
+
+async function replyLongTextWithFinalKeyboard(
+  ctx: BotContext,
+  botCtx: BotInstanceContext,
+  input: string,
+  keyboard: unknown,
+): Promise<number> {
+  const parts = splitTelegramText(input);
+  let lastMessageId = 0;
+  for (let index = 0; index < parts.length; index += 1) {
+    const message = await replyText(ctx, botCtx, parts[index], {
+      reply_markup: index === parts.length - 1 ? keyboard : { inline_keyboard: [] },
+    });
+    lastMessageId = message.message_id;
+  }
+  return lastMessageId;
+}
+
+async function showWorldBookList(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  state: WorldBookMenuState,
+  page = 0,
+  refresh = false,
+): Promise<void> {
+  if (refresh) state.books = await deps.worldBookAdminService.listWorldBooks(state.bookSearch);
+  state.currentBook = null;
+  state.entrySearch = "";
+  state.selectedEntryRef = null;
+  state.editPromptMessageId = null;
+  state.pending = null;
+  const rendered = renderWorldBookPage(state.books, page, botCtx.config.pageSize, state.bookSearch);
+  const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+  state.messageId = message.message_id;
+}
+
+async function showWorldBookEntries(
+  ctx: BotContext,
+  botCtx: BotInstanceContext,
+  state: WorldBookMenuState,
+  page = 0,
+): Promise<void> {
+  if (!state.currentBook) throw new AppError("WORLD_BOOK_MENU_STALE", "请重新选择世界书。", 400);
+  state.selectedEntryRef = null;
+  state.editPromptMessageId = null;
+  state.pending = null;
+  const rendered = renderWorldBookEntriesPage(
+    state.currentBook,
+    page,
+    botCtx.config.pageSize,
+    state.entrySearch,
+  );
+  const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+  state.messageId = message.message_id;
+}
+
+function selectedWorldBookEntry(state: WorldBookMenuState): WorldBookEntryView | null {
+  if (!state.currentBook || !state.selectedEntryRef) return null;
+  return state.currentBook.entries.find((entry) => entry.ref === state.selectedEntryRef) ?? null;
+}
+
+async function showWorldBookEntry(
+  ctx: BotContext,
+  botCtx: BotInstanceContext,
+  state: WorldBookMenuState,
+): Promise<void> {
+  if (!state.currentBook) throw new AppError("WORLD_BOOK_MENU_STALE", "请重新选择世界书。", 400);
+  const entry = selectedWorldBookEntry(state);
+  if (!entry) throw new AppError("WORLD_BOOK_ENTRY_STALE", "请重新选择世界书条目。", 400);
+  state.editPromptMessageId = null;
+  state.pending = null;
+  const rendered = renderWorldBookEntry(state.currentBook, entry);
+  state.messageId = await replyLongTextWithFinalKeyboard(ctx, botCtx, rendered.text, rendered.keyboard);
+}
+
+async function openWorldBookMenu(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  accountId: string,
+  userId: string,
+  search = "",
+): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  const books = await deps.worldBookAdminService.listWorldBooks(search);
+  const state: WorldBookMenuState = {
+    accountId,
+    chatId,
+    userId,
+    books,
+    bookSearch: search.trim(),
+    currentBook: null,
+    entrySearch: "",
+    selectedEntryRef: null,
+    messageId: null,
+    editPromptMessageId: null,
+    pending: null,
+    saving: false,
+    expiresAt: Date.now() + WORLD_BOOK_MENU_TTL_MS,
+  };
+  worldBookMenus.set(worldBookMenuKey(accountId, chatId, userId), state);
+  await showWorldBookList(ctx, deps, botCtx, state, 0);
+}
+
+async function handleWorldBookCallback(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  accountId: string,
+  userId: string,
+  data: string,
+): Promise<void> {
+  const state = getWorldBookMenu(accountId, ctx.chat?.id, userId);
+  const callbackMessageId = Number(ctx.callbackQuery?.message?.message_id ?? 0);
+  if (!state || !state.messageId || callbackMessageId !== state.messageId) {
+    await ctx.answerCallbackQuery({ text: "这个世界书菜单已失效" });
+    await replyText(ctx, botCtx, "世界书菜单已失效，请重新使用 /worldbook。", { priority: "critical" });
+    return;
+  }
+
+  if (data === "wb:confirm" && state.saving) {
+    await ctx.answerCallbackQuery({ text: "正在保存，请稍候" });
+    return;
+  }
+
+  await ctx.answerCallbackQuery(data === "wb:confirm" ? { text: "正在保存" } : undefined);
+  try {
+    if (data.startsWith("wb:bp:")) {
+      await showWorldBookList(ctx, deps, botCtx, state, Number(data.split(":")[2] ?? 0));
+      return;
+    }
+    if (data.startsWith("wb:b:")) {
+      const book = state.books[Number(data.split(":")[2] ?? -1)];
+      if (!book) throw new AppError("WORLD_BOOK_MENU_STALE", "世界书选择已失效。", 400);
+      state.currentBook = await deps.worldBookAdminService.getWorldBook(book.id);
+      state.entrySearch = "";
+      await showWorldBookEntries(ctx, botCtx, state, 0);
+      return;
+    }
+    if (data === "wb:books") {
+      await showWorldBookList(ctx, deps, botCtx, state, 0, true);
+      return;
+    }
+    if (data.startsWith("wb:ep:")) {
+      await showWorldBookEntries(ctx, botCtx, state, Number(data.split(":")[2] ?? 0));
+      return;
+    }
+    if (data === "wb:entries") {
+      await showWorldBookEntries(ctx, botCtx, state, 0);
+      return;
+    }
+    if (data.startsWith("wb:e:")) {
+      const entry = state.currentBook?.entries[Number(data.split(":")[2] ?? -1)];
+      if (!entry) throw new AppError("WORLD_BOOK_ENTRY_STALE", "世界书条目选择已失效。", 400);
+      state.selectedEntryRef = entry.ref;
+      await showWorldBookEntry(ctx, botCtx, state);
+      return;
+    }
+    if (data === "wb:edit") {
+      const entry = selectedWorldBookEntry(state);
+      if (!state.currentBook || !entry) throw new AppError("WORLD_BOOK_ENTRY_STALE", "请重新选择世界书条目。", 400);
+      const prompt = await replyText(ctx, botCtx, [
+        `请回复这条消息，发送 [${entry.uid}] ${entry.comment || "未命名条目"} 的完整新正文。`,
+        "",
+        "只会修改正文，不会修改关键词或其他参数。Telegram 单条文本上限约 4096 字符。",
+        "如果不想修改，请使用 /wbcancel。",
+      ].join("\n"));
+      state.editPromptMessageId = prompt.message_id;
+      state.messageId = prompt.message_id;
+      state.pending = null;
+      state.expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+      return;
+    }
+    if (data === "wb:toggle") {
+      const entry = selectedWorldBookEntry(state);
+      if (!state.currentBook || !entry) throw new AppError("WORLD_BOOK_ENTRY_STALE", "请重新选择世界书条目。", 400);
+      state.pending = {
+        entryRef: entry.ref,
+        expectedRevision: state.currentBook.revision,
+        enabled: !entry.enabled,
+      };
+      const rendered = renderWorldBookChangePreview({
+        bookName: state.currentBook.name,
+        entry,
+        nextEnabled: !entry.enabled,
+      });
+      const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+      state.messageId = message.message_id;
+      return;
+    }
+    if (data === "wb:cancel") {
+      state.pending = null;
+      await replyText(ctx, botCtx, "已取消，本次没有修改世界书。");
+      await showWorldBookEntry(ctx, botCtx, state);
+      return;
+    }
+    if (data === "wb:confirm") {
+      if (!state.currentBook || !state.pending) {
+        throw new AppError("WORLD_BOOK_CHANGE_STALE", "待确认的修改已经失效。", 400);
+      }
+      const entryRef = state.pending.entryRef;
+      state.saving = true;
+      let result;
+      try {
+        result = await deps.worldBookAdminService.updateEntry({
+          bookId: state.currentBook.id,
+          entryRef,
+          expectedRevision: state.pending.expectedRevision,
+          patch: {
+            ...(typeof state.pending.content === "string" ? { content: state.pending.content } : {}),
+            ...(typeof state.pending.enabled === "boolean" ? { enabled: state.pending.enabled } : {}),
+          },
+        });
+      } finally {
+        state.saving = false;
+      }
+      state.pending = null;
+      state.currentBook = state.entrySearch
+        ? await deps.worldBookAdminService.getWorldBook(result.book.id, state.entrySearch)
+        : result.book;
+      state.selectedEntryRef = entryRef;
+      await replyText(ctx, botCtx, [
+        "✅ 世界书已保存。",
+        `备份文件：${result.backupFileName}`,
+        "下一次网页完整模式生成会自动重新读取世界书缓存。",
+      ].join("\n"), { priority: "critical" });
+      await showWorldBookEntry(ctx, botCtx, state);
+      return;
+    }
+    throw new AppError("WORLD_BOOK_ACTION_INVALID", "不支持的世界书操作。", 400);
+  } catch (error) {
+    state.pending = null;
+    const message = error instanceof Error ? error.message : String(error);
+    await replyText(ctx, botCtx, `世界书操作失败：${message}`, { priority: "critical" });
   }
 }
 
@@ -698,6 +1003,52 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
 
     const rendered = renderRecentSessionsPage(recentSessions);
     await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+  });
+
+  bot.command(["worldbook", "wb"], async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId) return;
+    const accountId = getAccountId(userId, deps, botCtx);
+    if (!await requireWorldBookAdmin(ctx, deps, botCtx, accountId)) return;
+    const search = (ctx.message?.text ?? "").split(/\s+/).slice(1).join(" ").trim();
+    try {
+      await openWorldBookMenu(ctx, deps, botCtx, accountId, userId, search);
+    } catch (error) {
+      await replyText(ctx, botCtx, `读取世界书失败：${error instanceof Error ? error.message : String(error)}`, { priority: "critical" });
+    }
+  });
+
+  bot.command("wbfind", async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId) return;
+    const accountId = getAccountId(userId, deps, botCtx);
+    if (!await requireWorldBookAdmin(ctx, deps, botCtx, accountId)) return;
+    const state = getWorldBookMenu(accountId, ctx.chat?.id, userId);
+    if (!state?.currentBook) {
+      await replyText(ctx, botCtx, "请先使用 /worldbook 选择一个世界书。", { priority: "critical" });
+      return;
+    }
+    const search = (ctx.message?.text ?? "").split(/\s+/).slice(1).join(" ").trim();
+    if (!search) {
+      await replyText(ctx, botCtx, "用法：/wbfind 关键词\n会搜索当前世界书的条目名称、关键词和正文。");
+      return;
+    }
+    try {
+      state.currentBook = await deps.worldBookAdminService.getWorldBook(state.currentBook.id, search);
+      state.entrySearch = search;
+      await showWorldBookEntries(ctx, botCtx, state, 0);
+    } catch (error) {
+      await replyText(ctx, botCtx, `搜索世界书失败：${error instanceof Error ? error.message : String(error)}`, { priority: "critical" });
+    }
+  });
+
+  bot.command("wbcancel", async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId || !ctx.chat?.id) return;
+    const accountId = getAccountId(userId, deps, botCtx);
+    if (!await requireWorldBookAdmin(ctx, deps, botCtx, accountId)) return;
+    worldBookMenus.delete(worldBookMenuKey(accountId, ctx.chat.id, userId));
+    await replyText(ctx, botCtx, "已退出世界书编辑，本次没有保存任何待确认修改。");
   });
 
   bot.command("model", async (ctx) => {
@@ -1254,6 +1605,15 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
 
     const accountId = getAccountId(userId, deps, botCtx);
     const data = ctx.callbackQuery.data;
+
+    if (data.startsWith("wb:")) {
+      if (!await requireWorldBookAdmin(ctx, deps, botCtx, accountId)) {
+        await ctx.answerCallbackQuery({ text: "需要 SillyTavern 管理员权限" });
+        return;
+      }
+      await handleWorldBookCallback(ctx, deps, botCtx, accountId, userId, data);
+      return;
+    }
 
     if (data.startsWith("sw:")) {
       const callback = decodeSwipeCallback(data);
@@ -1930,6 +2290,38 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     }
 
     const accountId = getAccountId(userId, deps, botCtx);
+    const worldBookState = getWorldBookMenu(accountId, ctx.chat?.id, userId);
+    const repliedMessageId = Number(ctx.message.reply_to_message?.message_id ?? 0);
+    if (worldBookState?.editPromptMessageId && repliedMessageId === worldBookState.editPromptMessageId) {
+      const entry = selectedWorldBookEntry(worldBookState);
+      if (!worldBookState.currentBook || !entry) {
+        worldBookMenus.delete(worldBookMenuKey(accountId, worldBookState.chatId, userId));
+        await replyText(ctx, botCtx, "世界书编辑状态已失效，请重新使用 /worldbook。", { priority: "critical" });
+        return;
+      }
+      const nextContent = ctx.message.text;
+      if (nextContent === entry.content) {
+        worldBookState.editPromptMessageId = null;
+        await replyText(ctx, botCtx, "新正文与原正文相同，没有需要保存的修改。");
+        await showWorldBookEntry(ctx, botCtx, worldBookState);
+        return;
+      }
+      worldBookState.pending = {
+        entryRef: entry.ref,
+        expectedRevision: worldBookState.currentBook.revision,
+        content: nextContent,
+      };
+      worldBookState.editPromptMessageId = null;
+      const rendered = renderWorldBookChangePreview({
+        bookName: worldBookState.currentBook.name,
+        entry,
+        nextContent,
+      });
+      const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+      worldBookState.messageId = message.message_id;
+      return;
+    }
+
     const state = deps.sessionService.getActiveSession(accountId);
     let operationKey: string | null = null;
     if (state?.activeCharacterAvatar && state.activeChatFile) {

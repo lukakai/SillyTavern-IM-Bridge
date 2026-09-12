@@ -6,6 +6,8 @@
   LatestDialogueRecord,
   ModelSummary,
   StGenerationSettings,
+  WorldBookDocument,
+  WorldBookSummary,
 } from "../../core/models/index";
 import { AppError } from "../../shared/errors/app-error";
 import {
@@ -137,6 +139,36 @@ export class StClient {
   public async getGenerationSettings(): Promise<StGenerationSettings> {
     const payload = await this.postJson("/api/settings/get", {});
     return decodeGenerationSettings(payload);
+  }
+
+  public async listWorldBooks(): Promise<WorldBookSummary[]> {
+    const payload = await this.postJson("/api/worldinfo/list", {});
+    const items = Array.isArray(payload) ? payload : [];
+    return items
+      .map((item: any) => ({
+        id: typeof item?.file_id === "string" ? item.file_id.trim() : "",
+        name: typeof item?.name === "string" && item.name.trim()
+          ? item.name.trim()
+          : typeof item?.file_id === "string" ? item.file_id.trim() : "",
+      }))
+      .filter((item: WorldBookSummary) => item.id)
+      .sort((left: WorldBookSummary, right: WorldBookSummary) => left.name.localeCompare(right.name, "zh-Hans-CN"));
+  }
+
+  public async getWorldBook(name: string): Promise<WorldBookDocument> {
+    const payload = await this.postJson("/api/worldinfo/get", { name });
+    if (!payload || typeof payload !== "object" || !("entries" in payload)) {
+      throw new AppError("WORLD_BOOK_PAYLOAD_INVALID", `世界书数据无效：${name}`, 502);
+    }
+    const entries = (payload as Record<string, unknown>).entries;
+    if (!entries || typeof entries !== "object") {
+      throw new AppError("WORLD_BOOK_PAYLOAD_INVALID", `世界书条目数据无效：${name}`, 502);
+    }
+    return payload as WorldBookDocument;
+  }
+
+  public async saveWorldBook(name: string, data: WorldBookDocument): Promise<void> {
+    await this.postJson("/api/worldinfo/edit", { name, data });
   }
 
   public async generateChatReply(params: {

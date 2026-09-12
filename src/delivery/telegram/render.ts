@@ -579,6 +579,9 @@ export function renderHelp(): string {
     "/model - 查看并切换当前可用模型",
     "/cmodel - 查看并切换压缩专用模型",
     "/prompt - 查看或切换提示词模式",
+    "/worldbook - 浏览和编辑独立世界书",
+    "/wbfind - 搜索当前世界书条目",
+    "/wbcancel - 退出世界书编辑",
     "/compress - 压缩当前会话历史（保留最近 15 条）",
     "/help - 查看帮助",
     "",
@@ -588,6 +591,7 @@ export function renderHelp(): string {
     "编辑最新一条 Telegram 用户消息会同步到 ST，但不会自动生成；随后再点回复下方按钮。",
     "使用 /prompt enhanced 可读取角色卡额外提示词、Persona 与文本世界书。",
     "使用 /prompt web 可让在线的酒馆网页执行完整前端生成流程。",
+    "世界书修改会先显示预览，确认后自动备份；不支持删除条目或覆盖整本世界书。",
     "",
     "兼容长命令：/characters /history /current。",
   ].join("\n");
