@@ -21,6 +21,7 @@ export interface HealthSnapshot {
       workers: number;
       pendingJobs: number;
       activeJobs: number;
+      relayVersions: string[];
     };
   };
 }
@@ -67,6 +68,9 @@ export function buildHealthSnapshot(services: AppServices): HealthSnapshot {
   const workers = relayStatuses.reduce((sum, status) => sum + status.workerCount, 0);
   const pendingJobs = relayStatuses.reduce((sum, status) => sum + status.pendingJobs, 0);
   const activeJobs = relayStatuses.reduce((sum, status) => sum + status.activeJobs, 0);
+  const relayVersions = [...new Set(relayStatuses
+    .map((status) => status.relayVersion?.trim())
+    .filter((relayVersion): relayVersion is string => Boolean(relayVersion)))].sort();
   const strandedRelayJobs = onlineAccounts === 0 && pendingJobs + activeJobs > 0;
   const webRelayStatus: CheckStatus = relayCheckFailed || strandedRelayJobs ? "degraded" : "ok";
 
@@ -95,6 +99,7 @@ export function buildHealthSnapshot(services: AppServices): HealthSnapshot {
         workers,
         pendingJobs,
         activeJobs,
+        relayVersions,
       },
     },
   };
@@ -110,6 +115,7 @@ export function renderHealthSnapshot(snapshot: HealthSnapshot): string {
     `数据库：${database}`,
     `Telegram Bot：${telegram.running}/${telegram.configured} 运行中${telegram.starting ? `，${telegram.starting} 个启动中` : ""}${telegram.errors ? `，${telegram.errors} 个错误` : ""}`,
     `网页中继：${relay.onlineAccounts} 个账号在线，${relay.workers} 个页面${relay.pendingJobs + relay.activeJobs ? `，${relay.pendingJobs} 个等待 / ${relay.activeJobs} 个执行中` : ""}`,
+    ...(relay.onlineAccounts > 0 ? [`中继版本：${relay.relayVersions.length > 0 ? relay.relayVersions.join("、") : "未知"}`] : []),
     `进程运行：${snapshot.uptimeSeconds} 秒`,
   ].join("\n");
 }

@@ -20,7 +20,13 @@ function services(options: { botStatus?: "running" | "error"; databaseError?: bo
       list: vi.fn(() => options.botStatus ? [{ status: options.botStatus }] : [{ status: "running" }]),
     },
     webRelayService: {
-      getStatus: vi.fn(() => ({ online: true, workerCount: 1, pendingJobs: 0, activeJobs: 0 })),
+      getStatus: vi.fn(() => ({
+        online: true,
+        workerCount: 1,
+        pendingJobs: 0,
+        activeJobs: 0,
+        relayVersion: "1.2.2",
+      })),
     },
   } as never;
 }
@@ -30,9 +36,14 @@ describe("health snapshot", () => {
     const snapshot = buildHealthSnapshot(services());
     expect(snapshot.status).toBe("healthy");
     expect(snapshot.checks.telegram).toMatchObject({ configured: 1, running: 1, errors: 0 });
-    expect(snapshot.checks.webRelay).toMatchObject({ onlineAccounts: 1, workers: 1 });
+    expect(snapshot.checks.webRelay).toMatchObject({
+      onlineAccounts: 1,
+      workers: 1,
+      relayVersions: ["1.2.2"],
+    });
     expect(JSON.stringify(snapshot)).not.toContain("token");
     expect(renderHealthSnapshot(snapshot)).toContain("系统状态：🟢 正常");
+    expect(renderHealthSnapshot(snapshot)).toContain("中继版本：1.2.2");
   });
 
   it("reports a terminal bot error as degraded instead of unhealthy", () => {
