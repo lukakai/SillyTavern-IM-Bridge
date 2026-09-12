@@ -64,6 +64,15 @@ describe("WorldBookAdminService", () => {
     expect(book.revision).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("resolves a character-linked standalone world book by id or display name", async () => {
+    const client = makeClient({ entries: {} });
+    const service = new WorldBookAdminService(client as never, backupDirectory);
+
+    await expect(service.resolveWorldBook("main-lore")).resolves.toEqual({ id: "main-lore", name: "主世界书" });
+    await expect(service.resolveWorldBook("主世界书.json")).resolves.toEqual({ id: "main-lore", name: "主世界书" });
+    await expect(service.resolveWorldBook("不存在")).resolves.toBeNull();
+  });
+
   it("backs up the original document and preserves unknown fields when editing content", async () => {
     const data: WorldBookDocument = {
       name: "主世界书",

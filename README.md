@@ -50,7 +50,8 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 ## Telegram 世界书管理
 
 - 世界书管理命令只对 SillyTavern 管理员账号所属的 Bot 开放，Telegram 用户仍须在该 Bot 的绑定白名单中。
-- `/worldbook` 查看独立世界书；`/worldbook 关键词` 按名称搜索。
+- `/worldbook` 查看独立世界书；`/worldbook 关键词` 按名称搜索；`/worldbook now` 直接打开 Telegram 当前会话角色在 SillyTavern 中绑定的独立世界书。
+- `now` 只解析角色的独立世界书绑定，不会把同名的角色卡内嵌世界书当成可写目标。保存后，下一次网页完整模式生成会重新读取世界书；已有回复不会被追溯修改。
 - 选择世界书后使用 `/wbfind 关键词` 搜索条目名称、关键词和正文。
 - 条目详情提供「编辑正文」和「启用/禁用」。编辑正文时必须回复 Bot 指定的提示消息，随后再点「确认保存」。
 - `/wbcancel` 随时退出编辑，未确认的草稿只保存在内存中，不会写入 SillyTavern。

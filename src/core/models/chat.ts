@@ -133,6 +133,10 @@ export interface CharacterCardDetails {
   creatorNotes?: string;
   postHistoryInstructions?: string;
   depthPrompt?: CharacterDepthPrompt | null;
+  /** Standalone world book selected for this character in SillyTavern. */
+  linkedWorldBook?: string | null;
+  /** Informational only: the embedded lorebook remains part of the card file. */
+  embeddedWorldBookName?: string | null;
   worldBookEntries?: WorldBookEntry[];
   mvu: MvuCardConfig | null;
   xuanxiang: XuanxiangCardConfig | null;

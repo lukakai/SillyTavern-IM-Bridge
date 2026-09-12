@@ -14,7 +14,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "model", description: "切换模型" },
   { command: "cmodel", description: "切换压缩模型" },
   { command: "prompt", description: "切换提示词模式" },
-  { command: "worldbook", description: "浏览和编辑独立世界书" },
+  { command: "worldbook", description: "管理世界书；加 now 定位当前角色" },
   { command: "wbfind", description: "搜索当前世界书条目" },
   { command: "wbcancel", description: "退出世界书编辑" },
   { command: "compress", description: "压缩当前会话历史" },

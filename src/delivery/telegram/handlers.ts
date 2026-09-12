@@ -82,6 +82,8 @@ interface WorldBookMenuState {
   chatId: number;
   userId: string;
   books: WorldBookSummary[];
+  bookScope: "all" | "current";
+  scopeLabel: string | null;
   bookSearch: string;
   currentBook: WorldBookView | null;
   entrySearch: string;
@@ -418,14 +420,17 @@ async function showWorldBookList(
   page = 0,
   refresh = false,
 ): Promise<void> {
-  if (refresh) state.books = await deps.worldBookAdminService.listWorldBooks(state.bookSearch);
+  if (refresh && state.bookScope === "all") {
+    state.books = await deps.worldBookAdminService.listWorldBooks(state.bookSearch);
+  }
   state.currentBook = null;
   state.entrySearch = "";
   state.selectedEntryRef = null;
   state.editPromptMessageId = null;
   state.pending = null;
   const rendered = renderWorldBookPage(state.books, page, botCtx.config.pageSize, state.bookSearch);
-  const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+  const text = state.scopeLabel ? `${state.scopeLabel}\n\n${rendered.text}` : rendered.text;
+  const message = await replyText(ctx, botCtx, text, { reply_markup: rendered.keyboard });
   state.messageId = message.message_id;
 }
 
@@ -445,7 +450,8 @@ async function showWorldBookEntries(
     botCtx.config.pageSize,
     state.entrySearch,
   );
-  const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+  const text = state.scopeLabel ? `${state.scopeLabel}\n\n${rendered.text}` : rendered.text;
+  const message = await replyText(ctx, botCtx, text, { reply_markup: rendered.keyboard });
   state.messageId = message.message_id;
 }
 
@@ -484,6 +490,8 @@ async function openWorldBookMenu(
     chatId,
     userId,
     books,
+    bookScope: "all",
+    scopeLabel: null,
     bookSearch: search.trim(),
     currentBook: null,
     entrySearch: "",
@@ -496,6 +504,63 @@ async function openWorldBookMenu(
   };
   worldBookMenus.set(worldBookMenuKey(accountId, chatId, userId), state);
   await showWorldBookList(ctx, deps, botCtx, state, 0);
+}
+
+async function openCurrentCharacterWorldBookMenu(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  accountId: string,
+  userId: string,
+): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  const active = deps.sessionService.requireActiveSession(accountId);
+  const card = await deps.characterService.getCharacterCard(active.activeCharacterAvatar!);
+  const reference = card.linkedWorldBook?.trim();
+  if (!reference) {
+    if (card.embeddedWorldBookName) {
+      throw new AppError(
+        "CURRENT_WORLD_BOOK_EMBEDDED_ONLY",
+        `当前角色没有关联可独立编辑的世界书。检测到角色卡内嵌世界书「${card.embeddedWorldBookName}」，当前版本不会修改角色卡原文件。`,
+        400,
+      );
+    }
+    throw new AppError(
+      "CURRENT_WORLD_BOOK_MISSING",
+      "当前会话角色没有关联独立世界书。请先在 SillyTavern 网页端为该角色选择世界书。",
+      400,
+    );
+  }
+
+  const book = await deps.worldBookAdminService.resolveWorldBook(reference);
+  if (!book) {
+    throw new AppError(
+      "CURRENT_WORLD_BOOK_NOT_FOUND",
+      `当前角色关联了世界书「${reference}」，但独立世界书列表中没有找到它。请先在 SillyTavern 网页端检查或重新选择。`,
+      404,
+    );
+  }
+
+  const state: WorldBookMenuState = {
+    accountId,
+    chatId,
+    userId,
+    books: [book],
+    bookScope: "current",
+    scopeLabel: `当前会话角色：${active.activeCharacterName}\n关联独立世界书：${book.name}`,
+    bookSearch: "",
+    currentBook: await deps.worldBookAdminService.getWorldBook(book.id),
+    entrySearch: "",
+    selectedEntryRef: null,
+    messageId: null,
+    editPromptMessageId: null,
+    pending: null,
+    saving: false,
+    expiresAt: Date.now() + WORLD_BOOK_MENU_TTL_MS,
+  };
+  worldBookMenus.set(worldBookMenuKey(accountId, chatId, userId), state);
+  await showWorldBookEntries(ctx, botCtx, state, 0);
 }
 
 async function handleWorldBookCallback(
@@ -1010,9 +1075,13 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     if (!userId) return;
     const accountId = getAccountId(userId, deps, botCtx);
     if (!await requireWorldBookAdmin(ctx, deps, botCtx, accountId)) return;
-    const search = (ctx.message?.text ?? "").split(/\s+/).slice(1).join(" ").trim();
+    const argument = (ctx.message?.text ?? "").split(/\s+/).slice(1).join(" ").trim();
     try {
-      await openWorldBookMenu(ctx, deps, botCtx, accountId, userId, search);
+      if (argument.toLocaleLowerCase() === "now") {
+        await openCurrentCharacterWorldBookMenu(ctx, deps, botCtx, accountId, userId);
+      } else {
+        await openWorldBookMenu(ctx, deps, botCtx, accountId, userId, argument);
+      }
     } catch (error) {
       await replyText(ctx, botCtx, `读取世界书失败：${error instanceof Error ? error.message : String(error)}`, { priority: "critical" });
     }

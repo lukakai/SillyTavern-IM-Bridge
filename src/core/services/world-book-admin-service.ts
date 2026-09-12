@@ -67,6 +67,14 @@ function matchesQuery(entry: WorldBookEntryView, query: string): boolean {
   return haystack.includes(query.toLocaleLowerCase());
 }
 
+function normalizedBookReference(value: string): string {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .replace(/\.json$/i, "")
+    .toLocaleLowerCase();
+}
+
 export class WorldBookAdminService {
   private readonly mutationQueues = new Map<string, Promise<unknown>>();
 
@@ -82,6 +90,19 @@ export class WorldBookAdminService {
     return query
       ? items.filter((item) => `${item.name}\n${item.id}`.toLocaleLowerCase().includes(query))
       : items;
+  }
+
+  public async resolveWorldBook(reference: string): Promise<WorldBookSummary | null> {
+    const raw = String(reference ?? "").trim();
+    if (!raw) return null;
+    const items = await this.stClient.listWorldBooks();
+    const exact = items.find((item) => item.id === raw || item.name === raw);
+    if (exact) return exact;
+    const normalized = normalizedBookReference(raw);
+    return items.find((item) => (
+      normalizedBookReference(item.id) === normalized
+      || normalizedBookReference(item.name) === normalized
+    )) ?? null;
   }
 
   public async getWorldBook(bookId: string, entrySearch = ""): Promise<WorldBookView> {

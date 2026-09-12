@@ -70,8 +70,12 @@ describe("decodeCharacterCard MVU metadata", () => {
         name: "完整角色",
         system_prompt: "系统规则",
         post_history_instructions: "历史后指令",
-        extensions: { depth_prompt: { prompt: "深度提示", depth: 3, role: 1 } },
+        extensions: {
+          world: "独立世界书",
+          depth_prompt: { prompt: "深度提示", depth: 3, role: 1 },
+        },
         character_book: {
+          name: "角色内嵌世界书",
           entries: [{
             id: 7,
             comment: "地点",
@@ -92,6 +96,8 @@ describe("decodeCharacterCard MVU metadata", () => {
     expect(decoded.systemPrompt).toBe("系统规则");
     expect(decoded.postHistoryInstructions).toBe("历史后指令");
     expect(decoded.depthPrompt).toEqual({ prompt: "深度提示", depth: 3, role: 1 });
+    expect(decoded.linkedWorldBook).toBe("独立世界书");
+    expect(decoded.embeddedWorldBookName).toBe("角色内嵌世界书");
     expect(decoded.worldBookEntries?.[0]).toMatchObject({
       comment: "地点",
       keys: ["机场"],
@@ -101,6 +107,20 @@ describe("decodeCharacterCard MVU metadata", () => {
       scanDepth: 5,
       group: "地点组",
     });
+  });
+
+  it("distinguishes an embedded lorebook from a linked standalone world book", () => {
+    const decoded = decodeCharacterCard([{
+      avatar: "embedded-only.png",
+      data: {
+        name: "仅内嵌世界书",
+        extensions: { world: "  " },
+        character_book: { name: "卡内设定", entries: [] },
+      },
+    }], "embedded-only.png");
+
+    expect(decoded.linkedWorldBook).toBeNull();
+    expect(decoded.embeddedWorldBookName).toBe("卡内设定");
   });
 
   it("resolves referenced xuanxiang rules without executing the card EJS", () => {

@@ -249,6 +249,12 @@ export function decodeCharacterCard(payload: unknown, avatar: string): Character
   }
 
   const data = cardData(item);
+  const linkedWorldBook = typeof data?.extensions?.world === "string"
+    ? data.extensions.world.trim() || null
+    : null;
+  const embeddedWorldBookName = typeof data?.character_book?.name === "string"
+    ? data.character_book.name.trim() || null
+    : null;
   return {
     avatar: String(item.avatar),
     name: typeof item.name === "string" ? item.name : (typeof data?.name === "string" ? data.name : ""),
@@ -265,6 +271,8 @@ export function decodeCharacterCard(payload: unknown, avatar: string): Character
     creatorNotes: typeof data?.creator_notes === "string" ? data.creator_notes : "",
     postHistoryInstructions: typeof data?.post_history_instructions === "string" ? data.post_history_instructions : "",
     depthPrompt: decodeDepthPrompt(data),
+    linkedWorldBook,
+    embeddedWorldBookName,
     worldBookEntries: decodeWorldBookEntries(data),
     mvu: decodeMvuCardConfig(item),
     xuanxiang: decodeXuanxiangCardConfig(item),

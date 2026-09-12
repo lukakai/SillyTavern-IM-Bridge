@@ -579,7 +579,7 @@ export function renderHelp(): string {
     "/model - 查看并切换当前可用模型",
     "/cmodel - 查看并切换压缩专用模型",
     "/prompt - 查看或切换提示词模式",
-    "/worldbook - 浏览和编辑独立世界书",
+    "/worldbook - 浏览和编辑独立世界书；加 now 打开当前角色所绑定的世界书",
     "/wbfind - 搜索当前世界书条目",
     "/wbcancel - 退出世界书编辑",
     "/compress - 压缩当前会话历史（保留最近 15 条）",
