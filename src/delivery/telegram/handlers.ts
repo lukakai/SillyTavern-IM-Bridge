@@ -1302,6 +1302,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     }
     const accountId = getAccountId(userId, deps, botCtx);
     if (!await requireGlobalSettingsAdmin(ctx, deps, botCtx, accountId)) return;
+    deps.modelService.clearModelSelection(accountId);
     try {
       await replyModels(ctx, deps, accountId, botCtx, 0);
     } catch (error) {
