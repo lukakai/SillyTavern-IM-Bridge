@@ -1,7 +1,34 @@
 import crypto from "node:crypto";
 import { AppError } from "../../shared/errors/app-error";
 
-export type WebRelayOperation = "send" | "regenerate";
+export type WebRelayGenerationOperation = "send" | "regenerate";
+export type WebRelayControlOperation =
+  | "settings_snapshot"
+  | "settings_select_profile"
+  | "settings_select_preset"
+  | "settings_select_model"
+  | "settings_set_prompt_entries"
+  | "settings_undo";
+export type WebRelayOperation = WebRelayGenerationOperation | WebRelayControlOperation;
+
+export interface GlobalPromptEntry {
+  identifier: string;
+  name: string;
+  enabled: boolean;
+  toggleable: boolean;
+  empty: boolean;
+}
+
+export interface GlobalSettingsSnapshot {
+  currentProfile: string | null;
+  profiles: string[];
+  currentPreset: string | null;
+  presets: string[];
+  currentModel: string | null;
+  prompts: GlobalPromptEntry[];
+  undoAvailable: boolean;
+  undoSavedAt: string | null;
+}
 
 export interface WebRelayJob {
   id: string;
@@ -11,6 +38,7 @@ export interface WebRelayJob {
   chatFile: string;
   text: string | null;
   modelOverride: string | null;
+  controlPayload?: Record<string, unknown>;
   createdAt: string;
   expiresAt: string;
 }
@@ -19,6 +47,7 @@ export interface WebRelayCompletion {
   messageIndex: number | null;
   chatId: string | null;
   characterAvatar: string | null;
+  result?: unknown;
 }
 
 export interface WebRelayStatus {
@@ -77,6 +106,100 @@ function requiredText(value: string, label: string): string {
 
 function optionalText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function invalidSettingsResult(): AppError {
+  return new AppError("WEB_RELAY_SETTINGS_INVALID", "网页中继返回了无效的全局设置状态", 502);
+}
+
+function nullableSettingsText(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string") throw invalidSettingsResult();
+  const text = optionalText(value);
+  if (text && text.length > 500) throw invalidSettingsResult();
+  return text;
+}
+
+function settingsStringList(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value) || value.length > limit) throw invalidSettingsResult();
+  return value.map((item) => {
+    if (typeof item !== "string") throw invalidSettingsResult();
+    const text = optionalText(item);
+    if (!text || text.length > 500) throw invalidSettingsResult();
+    return text;
+  });
+}
+
+function normalizeControlPayload(
+  operation: WebRelayControlOperation,
+  value: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const payload = value ?? {};
+  if (operation === "settings_snapshot" || operation === "settings_undo") return {};
+  if (operation === "settings_set_prompt_entries") {
+    if (!Array.isArray(payload.identifiers) || payload.identifiers.length < 1 || payload.identifiers.length > 500) {
+      throw new AppError("WEB_RELAY_SETTINGS_INVALID_PAYLOAD", "预设选项列表无效", 400);
+    }
+    const identifiers = [...new Set(payload.identifiers.map((item) => {
+      if (typeof item !== "string") {
+        throw new AppError("WEB_RELAY_SETTINGS_INVALID_PAYLOAD", "预设选项标识无效", 400);
+      }
+      const identifier = requiredText(item, "预设选项标识");
+      if (identifier.length > 200) {
+        throw new AppError("WEB_RELAY_SETTINGS_INVALID_PAYLOAD", "预设选项标识过长", 400);
+      }
+      return identifier;
+    }))];
+    if (typeof payload.enabled !== "boolean") {
+      throw new AppError("WEB_RELAY_SETTINGS_INVALID_PAYLOAD", "预设选项开关状态无效", 400);
+    }
+    return { identifiers, enabled: payload.enabled };
+  }
+  const name = requiredText(typeof payload.name === "string" ? payload.name : "", "设置名称");
+  if (name.length > 500) throw new AppError("WEB_RELAY_SETTINGS_INVALID_PAYLOAD", "设置名称过长", 400);
+  return { name };
+}
+
+function decodeGlobalSettingsSnapshot(value: unknown): GlobalSettingsSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw invalidSettingsResult();
+  }
+  const input = value as Record<string, unknown>;
+  if (!Array.isArray(input.prompts) || input.prompts.length > 2_000 || typeof input.undoAvailable !== "boolean") {
+    throw invalidSettingsResult();
+  }
+  const prompts = input.prompts.map((item): GlobalPromptEntry => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw invalidSettingsResult();
+    const prompt = item as Record<string, unknown>;
+    const identifier = optionalText(prompt.identifier);
+    const name = optionalText(prompt.name);
+    if (
+      !identifier
+      || !name
+      || typeof prompt.enabled !== "boolean"
+      || typeof prompt.toggleable !== "boolean"
+      || typeof prompt.empty !== "boolean"
+      || identifier.length > 200
+      || name.length > 500
+    ) throw invalidSettingsResult();
+    return {
+      identifier,
+      name,
+      enabled: prompt.enabled,
+      toggleable: prompt.toggleable,
+      empty: prompt.empty,
+    };
+  });
+  return {
+    currentProfile: nullableSettingsText(input.currentProfile),
+    profiles: settingsStringList(input.profiles, 500),
+    currentPreset: nullableSettingsText(input.currentPreset),
+    presets: settingsStringList(input.presets, 500),
+    currentModel: nullableSettingsText(input.currentModel),
+    prompts,
+    undoAvailable: input.undoAvailable,
+    undoSavedAt: nullableSettingsText(input.undoSavedAt),
+  };
 }
 
 /**
@@ -147,46 +270,70 @@ export class WebRelayService {
 
   public async execute(params: {
     accountId: string;
-    operation: WebRelayOperation;
+    operation: WebRelayGenerationOperation;
     avatar: string;
     characterName: string;
     chatFile: string;
     text?: string | null;
     modelOverride?: string | null;
   }): Promise<WebRelayCompletion> {
-    if (this.closed) throw new AppError("WEB_RELAY_CLOSED", "网页中继服务正在关闭", 503);
-    if (!this.getStatus(params.accountId).online) {
-      throw new AppError(
-        "WEB_RELAY_OFFLINE",
-        "网页完整模式中继未在线。请在 Mac mini 的专用 SillyTavern 页面中启用 IM Bridge 网页中继。",
-        503,
-      );
-    }
-
     const accountId = requiredText(params.accountId, "accountId");
-    const now = Date.now();
-    const id = crypto.randomUUID();
     const publicJob: WebRelayJob = {
-      id,
+      id: crypto.randomUUID(),
       operation: params.operation,
       avatar: requiredText(params.avatar, "avatar"),
       characterName: requiredText(params.characterName, "characterName"),
       chatFile: requiredText(params.chatFile, "chatFile"),
       text: params.operation === "send" ? String(params.text ?? "") : null,
       modelOverride: optionalText(params.modelOverride),
-      createdAt: new Date(now).toISOString(),
-      expiresAt: new Date(now + this.options.jobTimeoutMs).toISOString(),
+      createdAt: "",
+      expiresAt: "",
     };
+    return this.enqueue(accountId, publicJob, this.options.jobTimeoutMs);
+  }
 
+  public async executeControl(params: {
+    accountId: string;
+    operation: WebRelayControlOperation;
+    payload?: Record<string, unknown>;
+  }): Promise<GlobalSettingsSnapshot> {
+    const accountId = requiredText(params.accountId, "accountId");
+    const status = this.requireOnline(accountId);
+    if (status.pendingJobs > 0 || status.activeJobs > 0) {
+      throw new AppError("WEB_RELAY_SETTINGS_BUSY", "酒馆网页正在处理其他任务，请完成后再打开或修改全局设置", 409);
+    }
+    const publicJob: WebRelayJob = {
+      id: crypto.randomUUID(),
+      operation: params.operation,
+      avatar: "",
+      characterName: "",
+      chatFile: "",
+      text: null,
+      modelOverride: null,
+      controlPayload: normalizeControlPayload(params.operation, params.payload),
+      createdAt: "",
+      expiresAt: "",
+    };
+    const completion = await this.enqueue(accountId, publicJob, Math.min(this.options.jobTimeoutMs, 120_000));
+    return decodeGlobalSettingsSnapshot(completion.result);
+  }
+
+  private enqueue(accountId: string, publicJob: WebRelayJob, timeoutMs: number): Promise<WebRelayCompletion> {
+    this.requireOnline(accountId);
+    const now = Date.now();
+    publicJob.createdAt = new Date(now).toISOString();
+    publicJob.expiresAt = new Date(now + timeoutMs).toISOString();
+    const id = publicJob.id;
     return new Promise<WebRelayCompletion>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.removeJob(id);
+        const isGeneration = publicJob.operation === "send" || publicJob.operation === "regenerate";
         reject(new AppError(
           "WEB_RELAY_TIMEOUT",
-          `网页完整模式生成超时（${Math.round(this.options.jobTimeoutMs / 1000)} 秒）`,
+          `${isGeneration ? "网页完整模式生成" : "酒馆全局设置操作"}超时（${Math.round(timeoutMs / 1000)} 秒）`,
           504,
         ));
-      }, this.options.jobTimeoutMs);
+      }, timeoutMs);
       timer.unref?.();
 
       this.jobs.set(id, {
@@ -241,15 +388,17 @@ export class WebRelayService {
       messageIndex: Number.isInteger(completion.messageIndex) ? Number(completion.messageIndex) : null,
       chatId: optionalText(completion.chatId),
       characterAvatar: optionalText(completion.characterAvatar),
+      ...(completion.result !== undefined ? { result: completion.result } : {}),
     });
   }
 
   public fail(accountId: string, workerId: string, jobId: string, message: string): void {
     const job = this.requireClaimedJob(accountId, workerId, jobId);
     this.removeJob(jobId);
+    const isGeneration = job.publicJob.operation === "send" || job.publicJob.operation === "regenerate";
     job.reject(new AppError(
-      "WEB_RELAY_GENERATE_FAILED",
-      `酒馆网页生成失败：${String(message || "未知错误").slice(0, 1000)}`,
+      isGeneration ? "WEB_RELAY_GENERATE_FAILED" : "WEB_RELAY_SETTINGS_FAILED",
+      `${isGeneration ? "酒馆网页生成" : "酒馆全局设置操作"}失败：${String(message || "未知错误").slice(0, 1000)}`,
       502,
     ));
   }
@@ -274,6 +423,19 @@ export class WebRelayService {
     return (this.jobOrderByAccount.get(accountId) ?? [])
       .map((id) => this.jobs.get(id))
       .filter((job): job is InternalJob => Boolean(job));
+  }
+
+  private requireOnline(accountId: string): WebRelayStatus {
+    if (this.closed) throw new AppError("WEB_RELAY_CLOSED", "网页中继服务正在关闭", 503);
+    const status = this.getStatus(accountId);
+    if (!status.online) {
+      throw new AppError(
+        "WEB_RELAY_OFFLINE",
+        "网页完整模式中继未在线。请启动 Mac mini 的专用 SillyTavern 网页中继。",
+        503,
+      );
+    }
+    return status;
   }
 
   private claimNext(accountId: string, workerId: string): WebRelayJob | null {

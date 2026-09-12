@@ -19,6 +19,8 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 - `/recent` 在一键切换按钮之外显示会话消息数、最后更新时间和最后消息预览；单个角色的会话摘要只请求一次，某个角色读取失败时会保留基础列表。
 - `/health` 显示数据库、Telegram Bot 和网页中继状态；HTTP `GET /api/plugins/st-im-bridge/health` 提供相同的聚合状态，数据库不可用时返回 503，Bot 终止性错误返回 200 + `degraded`，避免无效重启循环。Bot 长轮询彻底退出时还会尽力向已授权用户发送一次告警；Token 失效或网络完全不可达时可能无法送达。
 - 新增 `/prompt web` 网页完整模式：Telegram 只提交生成任务，由一个已登录的 SillyTavern 浏览器页面调用原生 `Generate()`。因此会使用该页面当前的预设、世界书、Persona、Regex、生成拦截器及 MVU 等前端扩展；中继离线时明确报错，不会静默退回简化模式。
+- 新增酒馆全局设置控制：管理员可在 Telegram 使用 `/api` 切换 Connection Manager 配置、`/preset` 切换聊天预设及预设内部开关、`/model` 切换酒馆全局模型；修改与网页共用同一状态并对所有角色和聊天生效。网页中继离线或正在生成时拒绝修改，不会把 API 地址、密钥或 Secret ID 发到 Telegram。
+- 每次全局设置修改前由专用网页中继在浏览器 `localStorage` 保存一层完整撤销快照，使用 `/settingsundo` 恢复；再次撤销可在恢复前后的状态间切换。为保证连接配置可完整恢复，当前未选中已保存 Connection Manager 配置时会拒绝从 Telegram 切换连接配置。
 - 新增独立世界书管理：`/worldbook` 浏览或搜索世界书和条目，可修改条目正文、启用或禁用条目；所有写入都要二次确认、检查并发修改，并先生成可直接导入 SillyTavern 的 JSON 备份。不提供删除条目或整本覆盖。
 
 ## 安装
@@ -49,6 +51,14 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 - `/prompt` 查看当前模式及网页中继状态；`/prompt compact` 使用原有简化提示词（默认），`/prompt enhanced` 启用安全增强模式，`/prompt web` 启用网页完整模式。模式按账号保存，重启后仍然有效。
 - 增强模式会读取角色卡的 `system_prompt`、`post_history_instructions`、depth prompt、当前 Persona，以及角色卡内嵌世界书的常驻和关键词条目，并把对话窗口从 24 条提高到 48 条。
 - 世界书支持主/次关键词、匹配大小写与完整单词、扫描深度、概率、互斥分组、有限递归、插入顺序和字符预算。为保证 Unraid 后台运行安全稳定，不执行 EJS/JavaScript；含动态代码的条目会跳过。因此增强模式接近文本卡的网页体验，但不宣称与 SillyTavern 前端完全一致。
+
+## 酒馆全局设置
+
+- `/api`（兼容 `/profile`）分页列出 Connection Manager 已保存配置，只显示配置名称；切换前必须有一个已选中的保存配置，以便 `/settingsundo` 完整恢复。
+- `/preset` 分页切换聊天预设，并可进入“分类 → 分组 → 选项”三级菜单。单项与整组启用/禁用都需二次确认，空标题和 marker 不作为可修改选项。
+- `/model` 使用酒馆前端官方模型命令修改当前全局模型，不再创建 Telegram 当前会话专用覆盖。切换 API、模型或执行撤销时会清理旧版遗留的会话级模型覆盖。
+- `/settingsundo` 恢复上一次全局连接配置、预设、模型和该预设各 prompt 开关；每次成功恢复前会保存当前状态，因此可作为一层 undo/redo 使用。
+- 上述命令只对 SillyTavern 管理员账号所属 Bot 开放。所有读取和修改均需在线的专用网页中继；酒馆网页正在生成或处理中时立即拒绝，避免修改生成中的全局状态。
 
 ## Telegram 世界书管理
 

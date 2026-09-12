@@ -9,6 +9,7 @@ import type {
   WorldBookSummary,
   WorldBookView,
 } from "../../core/models/index";
+import type { GlobalSettingsSnapshot } from "../../core/services/web-relay-service";
 import { AppError } from "../../shared/errors/app-error";
 import { buildSessionKey, createRequestId } from "../../shared/utils/ids";
 import {
@@ -57,6 +58,16 @@ import {
 } from "./world-book";
 import { WorldBookMessageCleanup } from "./world-book-cleanup";
 import { buildHealthSnapshot, renderHealthSnapshot } from "../../plugin/health";
+import {
+  groupGlobalPrompts,
+  renderGlobalPresetPage,
+  renderGlobalProfilePage,
+  renderPromptBulkPreview,
+  renderPromptChangePreview,
+  renderPromptGroups,
+  renderPromptOptions,
+  renderPromptSections,
+} from "./global-settings";
 
 type BotContext = Context;
 
@@ -152,15 +163,29 @@ async function requireWorldBookAdmin(
   return false;
 }
 
+async function requireGlobalSettingsAdmin(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  accountId: string,
+): Promise<boolean> {
+  if (deps.repositories.accountRepository.getSTUserAccount(accountId)?.role === "admin") return true;
+  await replyText(ctx, botCtx, "只有 SillyTavern 管理员账号绑定的 Bot 可以修改全局 API、模型和预设。", { priority: "critical" });
+  return false;
+}
+
 async function getCharacters(deps: AppServices): Promise<CharacterSummary[]> {
   return deps.characterService.listCharacters();
 }
 
 async function getModels(accountId: string, deps: AppServices): Promise<{ models: ModelSummary[]; currentModel: string }> {
-  const result = await deps.modelService.listAvailableModels(accountId);
+  const [result, snapshot] = await Promise.all([
+    deps.modelService.listAvailableModels(accountId),
+    getGlobalSettings(accountId, deps),
+  ]);
   return {
     models: result.items,
-    currentModel: result.overrideModel ?? result.currentModel,
+    currentModel: snapshot.currentModel ?? result.currentModel,
   };
 }
 
@@ -366,6 +391,60 @@ async function replyCompressionProviderModels(
 
   const rendered = renderProviderModelPage(group, providerIdx, currentModel, page, botCtx.config.pageSize, COMPRESSION_MODEL_CALLBACK_PREFIX);
   await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+}
+
+async function getGlobalSettings(accountId: string, deps: AppServices): Promise<GlobalSettingsSnapshot> {
+  return deps.webRelayService.executeControl({ accountId, operation: "settings_snapshot" });
+}
+
+async function replyGlobalProfiles(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  accountId: string,
+  page = 0,
+): Promise<void> {
+  const snapshot = await getGlobalSettings(accountId, deps);
+  const rendered = renderGlobalProfilePage(snapshot, page, botCtx.config.pageSize);
+  await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+}
+
+async function replyGlobalPresets(
+  ctx: BotContext,
+  deps: AppServices,
+  botCtx: BotInstanceContext,
+  accountId: string,
+  page = 0,
+): Promise<void> {
+  const snapshot = await getGlobalSettings(accountId, deps);
+  const rendered = renderGlobalPresetPage(snapshot, page, botCtx.config.pageSize);
+  await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+}
+
+async function editGlobalSettingsMessage(
+  ctx: BotContext,
+  botCtx: BotInstanceContext,
+  rendered: { text: string; keyboard: unknown },
+): Promise<void> {
+  const chatId = ctx.chat?.id;
+  const messageId = ctx.callbackQuery?.message?.message_id;
+  if (chatId && messageId) {
+    try {
+      await botCtx.sender.editText(ctx, chatId, messageId, rendered.text, {
+        priority: "critical",
+        replyMarkup: rendered.keyboard,
+      });
+      return;
+    } catch {
+      // Telegram can reject edits for expired messages; send a fresh menu instead.
+    }
+  }
+  await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+}
+
+async function reportGlobalSettingsError(ctx: BotContext, botCtx: BotInstanceContext, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  await replyText(ctx, botCtx, `全局设置操作失败：${message}`, { priority: "critical" });
 }
 
 type ReplyTextOptions = { reply_markup?: unknown; priority?: "critical" | "normal" | "ephemeral" };
@@ -1221,8 +1300,52 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     if (!userId) {
       return;
     }
+    const accountId = getAccountId(userId, deps, botCtx);
+    if (!await requireGlobalSettingsAdmin(ctx, deps, botCtx, accountId)) return;
+    try {
+      await replyModels(ctx, deps, accountId, botCtx, 0);
+    } catch (error) {
+      await reportGlobalSettingsError(ctx, botCtx, error);
+    }
+  });
 
-    await replyModels(ctx, deps, getAccountId(userId, deps, botCtx), botCtx, 0);
+  bot.command(["api", "profile"], async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId) return;
+    const accountId = getAccountId(userId, deps, botCtx);
+    if (!await requireGlobalSettingsAdmin(ctx, deps, botCtx, accountId)) return;
+    try {
+      await replyGlobalProfiles(ctx, deps, botCtx, accountId, 0);
+    } catch (error) {
+      await reportGlobalSettingsError(ctx, botCtx, error);
+    }
+  });
+
+  bot.command("preset", async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId) return;
+    const accountId = getAccountId(userId, deps, botCtx);
+    if (!await requireGlobalSettingsAdmin(ctx, deps, botCtx, accountId)) return;
+    try {
+      await replyGlobalPresets(ctx, deps, botCtx, accountId, 0);
+    } catch (error) {
+      await reportGlobalSettingsError(ctx, botCtx, error);
+    }
+  });
+
+  bot.command("settingsundo", async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId) return;
+    const accountId = getAccountId(userId, deps, botCtx);
+    if (!await requireGlobalSettingsAdmin(ctx, deps, botCtx, accountId)) return;
+    try {
+      const snapshot = await deps.webRelayService.executeControl({ accountId, operation: "settings_undo" });
+      deps.modelService.clearModelSelection(accountId);
+      const rendered = renderGlobalPresetPage(snapshot, 0, botCtx.config.pageSize);
+      await replyText(ctx, botCtx, `已撤销上次全局设置修改。\n\n${rendered.text}`, { reply_markup: rendered.keyboard });
+    } catch (error) {
+      await reportGlobalSettingsError(ctx, botCtx, error);
+    }
   });
 
   bot.command("cmodel", async (ctx) => {
@@ -2254,78 +2377,340 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       return;
     }
 
+    if (
+      data.startsWith("gapi:")
+      || data.startsWith("gpreset:")
+      || data.startsWith("gprompt:")
+      || data.startsWith("gsettings:")
+    ) {
+      if (!await requireGlobalSettingsAdmin(ctx, deps, botCtx, accountId)) {
+        await ctx.answerCallbackQuery({ text: "需要 SillyTavern 管理员权限" });
+        return;
+      }
+      try {
+        if (data.startsWith("gapi:p:")) {
+          const page = Number(data.split(":")[2] ?? 0);
+          await ctx.answerCallbackQuery();
+          const snapshot = await getGlobalSettings(accountId, deps);
+          await editGlobalSettingsMessage(ctx, botCtx, renderGlobalProfilePage(snapshot, page, botCtx.config.pageSize));
+          return;
+        }
+        if (data.startsWith("gapi:s:")) {
+          const [, , pageToken, indexToken] = data.split(":");
+          const page = Number(pageToken ?? 0);
+          const snapshot = await getGlobalSettings(accountId, deps);
+          const name = snapshot.profiles[page * botCtx.config.pageSize + Number(indexToken)];
+          if (!name) {
+            await ctx.answerCallbackQuery({ text: "连接配置列表已经变化" });
+            return;
+          }
+          if (name === snapshot.currentProfile) {
+            await ctx.answerCallbackQuery({ text: "已经是当前全局连接配置" });
+            return;
+          }
+          await ctx.answerCallbackQuery({ text: "正在切换全局连接配置" });
+          const updated = await deps.webRelayService.executeControl({
+            accountId,
+            operation: "settings_select_profile",
+            payload: { name },
+          });
+          deps.modelService.clearModelSelection(accountId);
+          const rendered = renderGlobalProfilePage(updated, page, botCtx.config.pageSize);
+          rendered.text = `✅ 已全局切换连接配置：${name}\n\n${rendered.text}`;
+          await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
+        if (data.startsWith("gpreset:p:")) {
+          const page = Number(data.split(":")[2] ?? 0);
+          await ctx.answerCallbackQuery();
+          const snapshot = await getGlobalSettings(accountId, deps);
+          await editGlobalSettingsMessage(ctx, botCtx, renderGlobalPresetPage(snapshot, page, botCtx.config.pageSize));
+          return;
+        }
+        if (data.startsWith("gpreset:s:")) {
+          const [, , pageToken, indexToken] = data.split(":");
+          const page = Number(pageToken ?? 0);
+          const snapshot = await getGlobalSettings(accountId, deps);
+          const name = snapshot.presets[page * botCtx.config.pageSize + Number(indexToken)];
+          if (!name) {
+            await ctx.answerCallbackQuery({ text: "预设列表已经变化" });
+            return;
+          }
+          if (name === snapshot.currentPreset) {
+            await ctx.answerCallbackQuery({ text: "已经是当前全局聊天预设" });
+            return;
+          }
+          await ctx.answerCallbackQuery({ text: "正在切换全局聊天预设" });
+          const updated = await deps.webRelayService.executeControl({
+            accountId,
+            operation: "settings_select_preset",
+            payload: { name },
+          });
+          const rendered = renderGlobalPresetPage(updated, page, botCtx.config.pageSize);
+          rendered.text = `✅ 已全局切换聊天预设：${name}\n\n${rendered.text}`;
+          await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
+        if (data.startsWith("gprompt:sections:")) {
+          const page = Number(data.split(":")[2] ?? 0);
+          await ctx.answerCallbackQuery();
+          const snapshot = await getGlobalSettings(accountId, deps);
+          await editGlobalSettingsMessage(ctx, botCtx, renderPromptSections(snapshot, page, botCtx.config.pageSize));
+          return;
+        }
+        if (data.startsWith("gprompt:section:")) {
+          const [, , sectionToken, pageToken] = data.split(":");
+          const snapshot = await getGlobalSettings(accountId, deps);
+          const rendered = renderPromptGroups(
+            snapshot,
+            Number(sectionToken),
+            Number(pageToken),
+            botCtx.config.pageSize,
+          );
+          await ctx.answerCallbackQuery(rendered ? undefined : { text: "预设分类已经变化" });
+          if (rendered) await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
+        if (data.startsWith("gprompt:group:")) {
+          const [, , sectionToken, groupToken, pageToken] = data.split(":");
+          const snapshot = await getGlobalSettings(accountId, deps);
+          const rendered = renderPromptOptions(
+            snapshot,
+            Number(sectionToken),
+            Number(groupToken),
+            Number(pageToken),
+            botCtx.config.pageSize,
+          );
+          await ctx.answerCallbackQuery(rendered ? undefined : { text: "预设分组已经变化" });
+          if (rendered) await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
+        if (data.startsWith("gprompt:q:")) {
+          const [, , sectionToken, groupToken, pageToken, optionToken] = data.split(":");
+          const snapshot = await getGlobalSettings(accountId, deps);
+          const rendered = renderPromptChangePreview(
+            snapshot,
+            Number(sectionToken),
+            Number(groupToken),
+            Number(pageToken),
+            Number(optionToken),
+          );
+          await ctx.answerCallbackQuery(rendered ? undefined : { text: "预设选项已经变化" });
+          if (rendered) await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
+        if (data.startsWith("gprompt:a:")) {
+          const [, , sectionToken, groupToken, pageToken, optionToken, enabledToken] = data.split(":");
+          const sectionIndex = Number(sectionToken);
+          const groupIndex = Number(groupToken);
+          const page = Number(pageToken);
+          const optionIndex = Number(optionToken);
+          const enabled = enabledToken === "1";
+          const snapshot = await getGlobalSettings(accountId, deps);
+          const entry = groupGlobalPrompts(snapshot.prompts)[sectionIndex]?.groups[groupIndex]?.entries[optionIndex];
+          if (!entry) {
+            await ctx.answerCallbackQuery({ text: "预设选项已经变化" });
+            return;
+          }
+          await ctx.answerCallbackQuery({ text: enabled ? "正在全局启用" : "正在全局禁用" });
+          const updated = entry.enabled === enabled
+            ? snapshot
+            : await deps.webRelayService.executeControl({
+              accountId,
+              operation: "settings_set_prompt_entries",
+              payload: { identifiers: [entry.identifier], enabled },
+            });
+          const rendered = renderPromptOptions(updated, sectionIndex, groupIndex, page, botCtx.config.pageSize);
+          if (!rendered) throw new AppError("GLOBAL_PROMPT_STALE", "修改后预设结构发生变化，请重新执行 /preset", 409);
+          rendered.text = `✅ 已${enabled ? "启用" : "禁用"}：${entry.name}\n\n${rendered.text}`;
+          await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
+        if (data.startsWith("gprompt:bq:")) {
+          const [, , sectionToken, groupToken, pageToken, enabledToken] = data.split(":");
+          const snapshot = await getGlobalSettings(accountId, deps);
+          const rendered = renderPromptBulkPreview(
+            snapshot,
+            Number(sectionToken),
+            Number(groupToken),
+            Number(pageToken),
+            enabledToken === "1",
+          );
+          await ctx.answerCallbackQuery(rendered ? undefined : { text: "预设分组已经变化" });
+          if (rendered) await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
+        if (data.startsWith("gprompt:ba:")) {
+          const [, , sectionToken, groupToken, pageToken, enabledToken] = data.split(":");
+          const sectionIndex = Number(sectionToken);
+          const groupIndex = Number(groupToken);
+          const page = Number(pageToken);
+          const enabled = enabledToken === "1";
+          const snapshot = await getGlobalSettings(accountId, deps);
+          const group = groupGlobalPrompts(snapshot.prompts)[sectionIndex]?.groups[groupIndex];
+          if (!group) {
+            await ctx.answerCallbackQuery({ text: "预设分组已经变化" });
+            return;
+          }
+          const identifiers = group.entries.filter((entry) => entry.enabled !== enabled).map((entry) => entry.identifier);
+          await ctx.answerCallbackQuery({ text: enabled ? "正在全部启用" : "正在全部禁用" });
+          const updated = identifiers.length === 0
+            ? snapshot
+            : await deps.webRelayService.executeControl({
+              accountId,
+              operation: "settings_set_prompt_entries",
+              payload: { identifiers, enabled },
+            });
+          const rendered = renderPromptOptions(updated, sectionIndex, groupIndex, page, botCtx.config.pageSize);
+          if (!rendered) throw new AppError("GLOBAL_PROMPT_STALE", "修改后预设结构发生变化，请重新执行 /preset", 409);
+          rendered.text = `✅ 已${enabled ? "全部启用" : "全部禁用"}：${group.name}\n\n${rendered.text}`;
+          await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
+        if (data === "gsettings:undo") {
+          await ctx.answerCallbackQuery({ text: "正在撤销上次全局修改" });
+          const updated = await deps.webRelayService.executeControl({ accountId, operation: "settings_undo" });
+          deps.modelService.clearModelSelection(accountId);
+          const rendered = renderGlobalPresetPage(updated, 0, botCtx.config.pageSize);
+          rendered.text = `✅ 已撤销上次全局设置修改。\n\n${rendered.text}`;
+          await editGlobalSettingsMessage(ctx, botCtx, rendered);
+          return;
+        }
+      } catch (error) {
+        await reportGlobalSettingsError(ctx, botCtx, error);
+        return;
+      }
+    }
+
+    const isGlobalModelCallback = data.startsWith("providers:")
+      || data.startsWith("provider:")
+      || data.startsWith("pmodels:")
+      || data.startsWith("pmodel:")
+      || data.startsWith("models:")
+      || data.startsWith("model:");
+    if (isGlobalModelCallback && !await requireGlobalSettingsAdmin(ctx, deps, botCtx, accountId)) {
+      await ctx.answerCallbackQuery({ text: "需要 SillyTavern 管理员权限" });
+      return;
+    }
+
     if (data.startsWith("providers:")) {
       await ctx.answerCallbackQuery();
-      await replyModels(ctx, deps, accountId, botCtx, Number(data.split(":")[1] ?? 0));
+      try {
+        await replyModels(ctx, deps, accountId, botCtx, Number(data.split(":")[1] ?? 0));
+      } catch (error) {
+        await reportGlobalSettingsError(ctx, botCtx, error);
+      }
       return;
     }
 
     if (data.startsWith("provider:")) {
       const providerIdx = Number(data.split(":")[1] ?? 0);
       await ctx.answerCallbackQuery();
-      await replyProviderModels(ctx, deps, accountId, botCtx, providerIdx, 0);
+      try {
+        await replyProviderModels(ctx, deps, accountId, botCtx, providerIdx, 0);
+      } catch (error) {
+        await reportGlobalSettingsError(ctx, botCtx, error);
+      }
       return;
     }
 
     if (data.startsWith("pmodels:")) {
       const [, providerToken, pageToken] = data.split(":");
       await ctx.answerCallbackQuery();
-      await replyProviderModels(ctx, deps, accountId, botCtx, Number(providerToken ?? 0), Number(pageToken ?? 0));
+      try {
+        await replyProviderModels(ctx, deps, accountId, botCtx, Number(providerToken ?? 0), Number(pageToken ?? 0));
+      } catch (error) {
+        await reportGlobalSettingsError(ctx, botCtx, error);
+      }
       return;
     }
 
     if (data.startsWith("pmodel:")) {
-      const [, providerToken, pageToken, indexToken] = data.split(":");
-      const providerIdx = Number(providerToken ?? 0);
-      const { models } = await getModels(accountId, deps);
-      const groups = groupModelsByProvider(models);
-      const group = groups[providerIdx];
-      await ctx.answerCallbackQuery();
+      try {
+        const [, providerToken, pageToken, indexToken] = data.split(":");
+        const providerIdx = Number(providerToken ?? 0);
+        const { models, currentModel } = await getModels(accountId, deps);
+        const groups = groupModelsByProvider(models);
+        const group = groups[providerIdx];
+        if (!group) {
+          await ctx.answerCallbackQuery({ text: "供应商选择已失效" });
+          return;
+        }
 
-      if (!group) {
-        await replyText(ctx, botCtx, "供应商选择已失效，请重新执行 /model。");
-        return;
+        const model = group.models[Number(pageToken) * botCtx.config.pageSize + Number(indexToken)];
+        if (!model) {
+          await ctx.answerCallbackQuery({ text: "模型选择已失效" });
+          return;
+        }
+
+        if (model.id.toLocaleLowerCase() === currentModel.toLocaleLowerCase()) {
+          await ctx.answerCallbackQuery({ text: "已经是当前酒馆全局模型" });
+          return;
+        }
+
+        await ctx.answerCallbackQuery({ text: "正在切换酒馆全局模型" });
+        await deps.webRelayService.executeControl({
+          accountId,
+          operation: "settings_select_model",
+          payload: { name: model.id },
+        });
+        deps.modelService.clearModelSelection(accountId);
+        await replyText(ctx, botCtx, `✅ 已全局切换模型：${model.id}\n该模型对所有角色和聊天生效。`);
+        await replyProviderModels(ctx, deps, accountId, botCtx, providerIdx, Number(pageToken));
+      } catch (error) {
+        await reportGlobalSettingsError(ctx, botCtx, error);
       }
-
-      const model = group.models[Number(pageToken) * botCtx.config.pageSize + Number(indexToken)];
-      if (!model) {
-        await replyText(ctx, botCtx, "模型选择已失效，请重新执行 /model。");
-        return;
-      }
-
-      deps.modelService.selectModel(accountId, model.id);
-      await replyText(ctx, botCtx, `已切换模型：${model.id}`);
-      await replyProviderModels(ctx, deps, accountId, botCtx, providerIdx, Number(pageToken));
       return;
     }
 
     if (data.startsWith("models:")) {
       await ctx.answerCallbackQuery();
-      await replyModels(ctx, deps, accountId, botCtx, Number(data.split(":")[1] ?? 0));
+      try {
+        await replyModels(ctx, deps, accountId, botCtx, Number(data.split(":")[1] ?? 0));
+      } catch (error) {
+        await reportGlobalSettingsError(ctx, botCtx, error);
+      }
       return;
     }
 
     if (data === "model:reset") {
       deps.modelService.clearModelSelection(accountId);
-      await ctx.answerCallbackQuery({ text: "已恢复为 ST 默认模型" });
-      await replyModels(ctx, deps, accountId, botCtx, 0);
+      await ctx.answerCallbackQuery({ text: "已清除旧版 Telegram 模型覆盖" });
+      try {
+        await replyModels(ctx, deps, accountId, botCtx, 0);
+      } catch (error) {
+        await reportGlobalSettingsError(ctx, botCtx, error);
+      }
       return;
     }
 
     if (data.startsWith("model:")) {
-      const [, pageToken, indexToken] = data.split(":");
-      const { models } = await getModels(accountId, deps);
-      const model = models[Number(pageToken) * botCtx.config.pageSize + Number(indexToken)];
-      await ctx.answerCallbackQuery();
+      try {
+        const [, pageToken, indexToken] = data.split(":");
+        const { models, currentModel } = await getModels(accountId, deps);
+        const model = models[Number(pageToken) * botCtx.config.pageSize + Number(indexToken)];
+        if (!model) {
+          await ctx.answerCallbackQuery({ text: "模型选择已失效" });
+          return;
+        }
 
-      if (!model) {
-        await replyText(ctx, botCtx, "模型选择已失效，请重新执行 /model。");
-        return;
+        if (model.id.toLocaleLowerCase() === currentModel.toLocaleLowerCase()) {
+          await ctx.answerCallbackQuery({ text: "已经是当前酒馆全局模型" });
+          return;
+        }
+
+        await ctx.answerCallbackQuery({ text: "正在切换酒馆全局模型" });
+        await deps.webRelayService.executeControl({
+          accountId,
+          operation: "settings_select_model",
+          payload: { name: model.id },
+        });
+        deps.modelService.clearModelSelection(accountId);
+        await replyText(ctx, botCtx, `✅ 已全局切换模型：${model.id}\n该模型对所有角色和聊天生效。`);
+        await replyModels(ctx, deps, accountId, botCtx, Number(pageToken));
+      } catch (error) {
+        await reportGlobalSettingsError(ctx, botCtx, error);
       }
-
-      deps.modelService.selectModel(accountId, model.id);
-      await replyText(ctx, botCtx, `已切换模型：${model.id}`);
-      await replyModels(ctx, deps, accountId, botCtx, Number(pageToken));
       return;
     }
 

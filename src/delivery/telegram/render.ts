@@ -589,7 +589,10 @@ export function renderHelp(): string {
     "/revoke - 撤回上一轮（TG + ST）",
     "/recent - 查看最近使用的会话",
     "/health - 查看数据库、Bot 与网页中继状态",
-    "/model - 查看并切换当前可用模型",
+    "/api - 查看并切换酒馆全局 Connection Manager 配置",
+    "/preset - 切换酒馆全局聊天预设，并管理预设内部选项",
+    "/model - 查看并切换酒馆全局模型",
+    "/settingsundo - 撤销上一次 API、预设、模型或预设选项修改",
     "/cmodel - 查看并切换压缩专用模型",
     "/prompt - 查看或切换提示词模式",
     "/worldbook - 浏览和编辑独立世界书；加 now 打开当前角色所绑定的世界书",
@@ -604,6 +607,8 @@ export function renderHelp(): string {
     "编辑最新一条 Telegram 用户消息会同步到 ST，但不会自动生成；随后再点回复下方按钮。",
     "使用 /prompt enhanced 可读取角色卡额外提示词、Persona 与文本世界书。",
     "使用 /prompt web 可让在线的酒馆网页执行完整前端生成流程。",
+    "API、预设、模型和预设内部选项与酒馆网页共用同一全局状态，对所有聊天生效。",
+    "每次全局修改都会保留一次撤销快照；网页中继离线或酒馆正在生成时不会修改。",
     "世界书修改会先显示预览，确认后自动备份；不支持删除条目或覆盖整本世界书。",
     "",
     "兼容长命令：/characters /history /current。",
@@ -695,7 +700,7 @@ export interface ModelCallbackPrefix {
   provider: string;
   pmodels: string;
   pmodel: string;
-  reset: string;
+  reset?: string;
 }
 
 export const DEFAULT_MODEL_CALLBACK_PREFIX: ModelCallbackPrefix = {
@@ -703,7 +708,6 @@ export const DEFAULT_MODEL_CALLBACK_PREFIX: ModelCallbackPrefix = {
   provider: "provider",
   pmodels: "pmodels",
   pmodel: "pmodel",
-  reset: "model:reset",
 };
 
 export const COMPRESSION_MODEL_CALLBACK_PREFIX: ModelCallbackPrefix = {
@@ -746,7 +750,7 @@ export function renderProviderPage(
     }
   }
 
-  keyboard.text("使用 ST 默认", callbackPrefix.reset).row();
+  if (callbackPrefix.reset) keyboard.text("使用聊天模型", callbackPrefix.reset).row();
 
   if (safePage > 0) {
     keyboard.text("上一页", `${callbackPrefix.providers}:${safePage - 1}`);

@@ -21,7 +21,7 @@ import {
 } from "./mvu-service";
 import { createXuanxiangTurnPrompt } from "./xuanxiang-service";
 import { buildEnhancedSystemPrompt } from "./enhanced-prompt-service";
-import { WebRelayService, type WebRelayOperation } from "./web-relay-service";
+import { WebRelayService, type WebRelayGenerationOperation } from "./web-relay-service";
 
 function substitutePlaceholders(input: string, characterName: string, userName: string): string {
   return input
@@ -501,7 +501,7 @@ export class ConversationService {
     chatFile: string;
     text?: string | null;
     modelOverride?: string | null;
-    operation: WebRelayOperation;
+    operation: WebRelayGenerationOperation;
   }): Promise<GeneratedReplyCandidate> {
     if (!this.webRelayService) {
       throw new AppError("WEB_RELAY_UNAVAILABLE", "当前插件未初始化网页中继服务", 503);

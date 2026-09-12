@@ -182,6 +182,7 @@ export function registerRoutes(router: Router, services: AppServices): void {
       messageIndex: Number.isInteger(req.body?.messageIndex) ? Number(req.body.messageIndex) : null,
       chatId: typeof req.body?.chatId === "string" ? req.body.chatId.slice(0, 500) : null,
       characterAvatar: typeof req.body?.characterAvatar === "string" ? req.body.characterAvatar.slice(0, 500) : null,
+      result: req.body?.result,
     });
     res.status(204).end();
   }));

@@ -1,6 +1,23 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { WebRelayService } from "../src/core/services/web-relay-service";
 
+const globalSettingsResult = {
+  currentProfile: "主连接",
+  profiles: ["主连接", "备用连接"],
+  currentPreset: "剧情预设",
+  presets: ["剧情预设"],
+  currentModel: "model-a",
+  prompts: [{
+    identifier: "story-style",
+    name: "叙事风格",
+    enabled: true,
+    toggleable: true,
+    empty: false,
+  }],
+  undoAvailable: true,
+  undoSavedAt: "2026-09-12T00:00:00.000Z",
+};
+
 const openServices: WebRelayService[] = [];
 
 function createService(): WebRelayService {
@@ -102,5 +119,66 @@ describe("WebRelayService", () => {
     expect(job?.text).toBe("稍后到达");
     service.complete("account", "worker", job!.id, {});
     await execution;
+  });
+
+  it("round-trips a global settings control job and validates its result", async () => {
+    const service = createService();
+    service.heartbeat("account", { workerId: "worker", relayVersion: "1.1.0" });
+    const execution = service.executeControl({
+      accountId: "account",
+      operation: "settings_select_preset",
+      payload: { name: "剧情预设" },
+    });
+
+    const job = await service.poll("account", { workerId: "worker" }, 0);
+    expect(job).toMatchObject({
+      operation: "settings_select_preset",
+      avatar: "",
+      chatFile: "",
+      controlPayload: { name: "剧情预设" },
+    });
+    service.complete("account", "worker", job!.id, { result: globalSettingsResult });
+
+    await expect(execution).resolves.toEqual(globalSettingsResult);
+  });
+
+  it("rejects settings access while another relay job is pending", async () => {
+    const service = createService();
+    service.heartbeat("account", { workerId: "worker" });
+    const generation = service.execute({
+      accountId: "account",
+      operation: "send",
+      avatar: "card.png",
+      characterName: "角色",
+      chatFile: "chat",
+      text: "你好",
+    });
+
+    await expect(service.executeControl({
+      accountId: "account",
+      operation: "settings_snapshot",
+    })).rejects.toMatchObject({ code: "WEB_RELAY_SETTINGS_BUSY" });
+
+    const job = await service.poll("account", { workerId: "worker" }, 0);
+    service.complete("account", "worker", job!.id, {});
+    await generation;
+  });
+
+  it("rejects malformed settings results and oversized mutations", async () => {
+    const service = createService();
+    service.heartbeat("account", { workerId: "worker" });
+    const execution = service.executeControl({
+      accountId: "account",
+      operation: "settings_snapshot",
+    });
+    const job = await service.poll("account", { workerId: "worker" }, 0);
+    service.complete("account", "worker", job!.id, { result: { profiles: [] } });
+    await expect(execution).rejects.toMatchObject({ code: "WEB_RELAY_SETTINGS_INVALID" });
+
+    await expect(service.executeControl({
+      accountId: "account",
+      operation: "settings_set_prompt_entries",
+      payload: { identifiers: Array.from({ length: 501 }, (_, index) => `id-${index}`), enabled: true },
+    })).rejects.toMatchObject({ code: "WEB_RELAY_SETTINGS_INVALID_PAYLOAD" });
   });
 });
