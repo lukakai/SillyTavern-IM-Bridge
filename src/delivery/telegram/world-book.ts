@@ -10,6 +10,14 @@ function entryLabel(entry: WorldBookEntryView): string {
   return oneLine(entry.comment || entry.keys.join("、") || `条目 ${entry.uid}`, 80);
 }
 
+function entryStatus(entry: WorldBookEntryView): string {
+  return !entry.enabled ? "⚪" : entry.constant ? "🔵" : "🟢";
+}
+
+function entryMode(entry: WorldBookEntryView): string {
+  return entry.constant ? "🔵 蓝灯（常驻触发）" : "🟢 绿灯（关键词触发）";
+}
+
 function excerpt(value: string, maxLength = 900): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength)}\n……（共 ${value.length} 字符）`;
@@ -61,7 +69,7 @@ export function renderWorldBookEntriesPage(
   if (items.length === 0) lines.push("没有匹配的条目。", "");
   items.forEach((entry, index) => {
     const keys = entry.keys.length ? `｜关键词：${oneLine(entry.keys.join("、"), 50)}` : "";
-    lines.push(`${offset + index + 1}. ${entry.enabled ? "🟢" : "⚪"} [${entry.uid}] ${entryLabel(entry)}${keys}`);
+    lines.push(`${offset + index + 1}. ${entryStatus(entry)} [${entry.uid}] ${entryLabel(entry)}${keys}`);
   });
   lines.push("", `第 ${safePage + 1} / ${totalPages} 页`);
   lines.push("使用 /wbfind 关键词 搜索当前世界书的条目。");
@@ -82,7 +90,8 @@ export function renderWorldBookEntry(book: WorldBookView, entry: WorldBookEntryV
   const lines = [
     `世界书：${book.name}`,
     `条目：[${entry.uid}] ${entryLabel(entry)}`,
-    `状态：${entry.enabled ? "🟢 已启用" : "⚪ 已禁用"}`,
+    `状态：${entry.enabled ? "已启用" : "⚪ 已禁用"}`,
+    `触发模式：${entryMode(entry)}`,
     `主关键词：${entry.keys.length ? entry.keys.join("、") : "无"}`,
     `次关键词：${entry.secondaryKeys.length ? entry.secondaryKeys.join("、") : "无"}`,
     `正文长度：${entry.content.length} 字符`,
@@ -94,6 +103,8 @@ export function renderWorldBookEntry(book: WorldBookView, entry: WorldBookEntryV
     .text("✏️ 编辑正文", "wb:edit")
     .text(entry.enabled ? "⏸ 禁用" : "▶️ 启用", "wb:toggle")
     .row()
+    .text(entry.constant ? "🟢 改为绿灯" : "🔵 改为蓝灯", "wb:mode")
+    .row()
     .text("⬅️ 返回条目", "wb:entries")
     .text("📚 世界书列表", "wb:books");
   return { text: lines.join("\n"), keyboard };
@@ -104,6 +115,7 @@ export function renderWorldBookChangePreview(params: {
   entry: WorldBookEntryView;
   nextContent?: string;
   nextEnabled?: boolean;
+  nextConstant?: boolean;
 }): { text: string; keyboard: InlineKeyboard } {
   const lines = [
     "⚠️ 尚未保存，请确认修改",
@@ -122,6 +134,13 @@ export function renderWorldBookChangePreview(params: {
   }
   if (typeof params.nextEnabled === "boolean") {
     lines.push(`状态：${params.entry.enabled ? "启用" : "禁用"} → ${params.nextEnabled ? "启用" : "禁用"}`);
+  }
+  if (typeof params.nextConstant === "boolean") {
+    lines.push(`触发模式：${entryMode(params.entry)} → ${params.nextConstant ? "🔵 蓝灯（常驻触发）" : "🟢 绿灯（关键词触发）"}`);
+    if (!params.nextConstant && params.entry.keys.length === 0) {
+      lines.push("⚠️ 该条目没有主关键词，改为绿灯后通常不会被触发。请先在酒馆网页端设置关键词。");
+    }
+    if (!params.entry.enabled) lines.push("提示：该条目当前已禁用，切换模式不会自动启用。");
   }
   lines.push("", "确认后会先在插件 data/world-book-backups 中保存备份，再写入 SillyTavern。");
   const keyboard = new InlineKeyboard()

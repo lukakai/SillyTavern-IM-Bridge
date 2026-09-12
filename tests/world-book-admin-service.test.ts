@@ -58,6 +58,7 @@ describe("WorldBookAdminService", () => {
       uid: "7",
       comment: "城市设定",
       enabled: true,
+      constant: false,
       keys: ["银月城"],
       secondaryKeys: ["北方"],
     });
@@ -143,6 +144,47 @@ describe("WorldBookAdminService", () => {
       expectedRevision: before.revision,
       patch: { content: "不能覆盖" },
     })).rejects.toThrow("已被其他地方修改");
+  });
+
+  it("switches keyword and constant modes without changing the enabled flag or other entry fields", async () => {
+    const data: WorldBookDocument = {
+      entries: {
+        "1": { uid: 1, content: "设定", key: ["城市"], constant: false, disable: false, order: 27 },
+        "2": { uid: 2, content: "旧规则", key: [], constant: true, disable: true, order: 9 },
+      },
+    };
+    const client = makeClient(data);
+    const service = new WorldBookAdminService(client as never, backupDirectory);
+    const before = await service.getWorldBook("main-lore");
+    expect(before.entries.map((entry) => entry.constant)).toEqual([false, true]);
+
+    const result = await service.updateEntry({
+      bookId: "main-lore",
+      entryRef: "2",
+      expectedRevision: before.revision,
+      patch: { constant: false },
+    });
+    expect(result.entry).toMatchObject({ constant: false, enabled: false });
+    const saved = client.saveWorldBook.mock.calls[0][1] as WorldBookDocument;
+    expect((saved.entries as Record<string, any>)["2"]).toEqual({
+      uid: 2, content: "旧规则", key: [], constant: false, disable: true, order: 9,
+    });
+    expect((saved.entries as Record<string, any>)["1"]).toEqual(data.entries["1"]);
+    const backup = JSON.parse(await readFile(path.join(backupDirectory, result.backupFileName), "utf8"));
+    expect(backup.entries["2"].constant).toBe(true);
+
+    const greenClient = makeClient(data);
+    const greenService = new WorldBookAdminService(greenClient as never, backupDirectory);
+    const greenBefore = await greenService.getWorldBook("main-lore");
+    const blueResult = await greenService.updateEntry({
+      bookId: "main-lore",
+      entryRef: "1",
+      expectedRevision: greenBefore.revision,
+      patch: { constant: true },
+    });
+    expect(blueResult.entry).toMatchObject({ constant: true, enabled: true });
+    expect(((greenClient.saveWorldBook.mock.calls[0][1] as WorldBookDocument).entries as Record<string, any>)["1"])
+      .toEqual({ uid: 1, content: "设定", key: ["城市"], constant: true, disable: false, order: 27 });
   });
 
   it("serializes edits to the same book so concurrent stale writes cannot win", async () => {

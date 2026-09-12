@@ -16,6 +16,8 @@ export interface WorldBookEntryView {
   keys: string[];
   secondaryKeys: string[];
   enabled: boolean;
+  /** Blue/constant when true; green/keyword-triggered when false. */
+  constant: boolean;
 }
 
 export interface WorldBookView {

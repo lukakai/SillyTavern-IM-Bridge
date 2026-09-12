@@ -20,6 +20,7 @@ const book: WorldBookView = {
       keys: ["银月城"],
       secondaryKeys: [],
       enabled: true,
+      constant: false,
     },
     {
       ref: "8",
@@ -29,6 +30,7 @@ const book: WorldBookView = {
       keys: [],
       secondaryKeys: [],
       enabled: false,
+      constant: true,
     },
   ],
 };
@@ -52,7 +54,15 @@ describe("Telegram world-book rendering", () => {
   it("renders entry actions and a non-destructive confirmation", () => {
     const detail = renderWorldBookEntry(book, book.entries[0]);
     expect(detail.text).toContain("旧正文");
+    expect(detail.text).toContain("🟢 绿灯（关键词触发）");
     expect(detail.keyboard.inline_keyboard.flat()).toContainEqual({ text: "✏️ 编辑正文", callback_data: "wb:edit" });
+    expect(detail.keyboard.inline_keyboard.flat()).toContainEqual({ text: "🔵 改为蓝灯", callback_data: "wb:mode" });
+
+    const blue = renderWorldBookEntry(book, { ...book.entries[0], constant: true });
+    expect(blue.text).toContain("🔵 蓝灯（常驻触发）");
+    expect(blue.keyboard.inline_keyboard.flat()).toContainEqual({ text: "🟢 改为绿灯", callback_data: "wb:mode" });
+    expect(renderWorldBookEntriesPage({ ...book, entries: [{ ...book.entries[0], constant: true }] }, 0, 8).text)
+      .toContain("🔵 [2] 城市设定");
 
     const preview = renderWorldBookChangePreview({
       bookName: book.name,
@@ -66,5 +76,14 @@ describe("Telegram world-book rendering", () => {
       { text: "✅ 确认保存", callback_data: "wb:confirm" },
       { text: "❌ 取消", callback_data: "wb:cancel" },
     ]);
+
+    const modePreview = renderWorldBookChangePreview({
+      bookName: book.name,
+      entry: book.entries[1],
+      nextConstant: false,
+    });
+    expect(modePreview.text).toContain("蓝灯（常驻触发） → 🟢 绿灯（关键词触发）");
+    expect(modePreview.text).toContain("没有主关键词");
+    expect(modePreview.text).toContain("切换模式不会自动启用");
   });
 });

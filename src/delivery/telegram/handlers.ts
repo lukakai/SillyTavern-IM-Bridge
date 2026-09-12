@@ -75,6 +75,7 @@ interface WorldBookPendingChange {
   expectedRevision: string;
   content?: string;
   enabled?: boolean;
+  constant?: boolean;
 }
 
 interface WorldBookMenuState {
@@ -649,6 +650,23 @@ async function handleWorldBookCallback(
       state.messageId = message.message_id;
       return;
     }
+    if (data === "wb:mode") {
+      const entry = selectedWorldBookEntry(state);
+      if (!state.currentBook || !entry) throw new AppError("WORLD_BOOK_ENTRY_STALE", "请重新选择世界书条目。", 400);
+      state.pending = {
+        entryRef: entry.ref,
+        expectedRevision: state.currentBook.revision,
+        constant: !entry.constant,
+      };
+      const rendered = renderWorldBookChangePreview({
+        bookName: state.currentBook.name,
+        entry,
+        nextConstant: !entry.constant,
+      });
+      const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+      state.messageId = message.message_id;
+      return;
+    }
     if (data === "wb:cancel") {
       state.pending = null;
       await replyText(ctx, botCtx, "已取消，本次没有修改世界书。");
@@ -670,6 +688,7 @@ async function handleWorldBookCallback(
           patch: {
             ...(typeof state.pending.content === "string" ? { content: state.pending.content } : {}),
             ...(typeof state.pending.enabled === "boolean" ? { enabled: state.pending.enabled } : {}),
+            ...(typeof state.pending.constant === "boolean" ? { constant: state.pending.constant } : {}),
           },
         });
       } finally {

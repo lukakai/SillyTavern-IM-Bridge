@@ -14,6 +14,7 @@ import { AppError } from "../../shared/errors/app-error";
 interface WorldBookEntryPatch {
   content?: string;
   enabled?: boolean;
+  constant?: boolean;
 }
 
 interface RawEntryLocation {
@@ -56,6 +57,7 @@ function entryView(location: RawEntryLocation): WorldBookEntryView {
     keys: textArray(entry.key),
     secondaryKeys: textArray(entry.keysecondary),
     enabled: hasLegacyDisable ? entry.disable !== true : entry.enabled !== false,
+    constant: entry.constant === true,
   };
 }
 
@@ -154,7 +156,8 @@ export class WorldBookAdminService {
 
     const hasContent = Object.prototype.hasOwnProperty.call(params.patch, "content");
     const hasEnabled = typeof params.patch.enabled === "boolean";
-    if (!hasContent && !hasEnabled) {
+    const hasConstant = typeof params.patch.constant === "boolean";
+    if (!hasContent && !hasEnabled && !hasConstant) {
       throw new AppError("WORLD_BOOK_PATCH_EMPTY", "没有需要保存的世界书修改。", 400);
     }
     const backupData = structuredClone(data);
@@ -176,6 +179,9 @@ export class WorldBookAdminService {
       if (Object.prototype.hasOwnProperty.call(location.entry, "enabled")) {
         location.entry.enabled = enabled;
       }
+    }
+    if (hasConstant) {
+      location.entry.constant = params.patch.constant!;
     }
 
     const backupFileName = await this.backup(summary.id, actualRevision, backupData);
