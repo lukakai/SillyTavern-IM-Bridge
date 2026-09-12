@@ -55,6 +55,7 @@ import {
   renderWorldBookEntry,
   renderWorldBookPage,
 } from "./world-book";
+import { WorldBookMessageCleanup } from "./world-book-cleanup";
 
 type BotContext = Context;
 
@@ -93,11 +94,14 @@ interface WorldBookMenuState {
   editPromptMessageId: number | null;
   pending: WorldBookPendingChange | null;
   saving: boolean;
+  cleanup: WorldBookMessageCleanup;
   expiresAt: number;
 }
 
 const worldBookMenus = new Map<string, WorldBookMenuState>();
 const WORLD_BOOK_MENU_TTL_MS = 30 * 60 * 1000;
+const WORLD_BOOK_EDIT_TTL_MS = 24 * 60 * 60 * 1000;
+const WORLD_BOOK_MESSAGE_IDLE_MS = 15 * 60 * 1000;
 
 export interface BotRuntimeConfig {
   pageSize: number;
@@ -383,6 +387,25 @@ function worldBookMenuKey(accountId: string, chatId: number, userId: string): st
   return `${accountId}:${chatId}:${userId}`;
 }
 
+function newWorldBookCleanup(ctx: BotContext, botCtx: BotInstanceContext, chatId: number): WorldBookMessageCleanup {
+  return new WorldBookMessageCleanup(
+    (messageId) => botCtx.sender.deleteMessage(ctx, chatId, messageId, "normal"),
+    WORLD_BOOK_MESSAGE_IDLE_MS,
+  );
+}
+
+async function replyWorldBookText(
+  ctx: BotContext,
+  botCtx: BotInstanceContext,
+  state: WorldBookMenuState,
+  text: string,
+  options?: ReplyTextOptions,
+): Promise<{ message_id: number }> {
+  const message = await replyText(ctx, botCtx, text, options);
+  state.cleanup.track(message.message_id);
+  return message;
+}
+
 function getWorldBookMenu(accountId: string, chatId: number | undefined, userId: string): WorldBookMenuState | null {
   if (!chatId) return null;
   const key = worldBookMenuKey(accountId, chatId, userId);
@@ -390,9 +413,12 @@ function getWorldBookMenu(accountId: string, chatId: number | undefined, userId:
   if (!state) return null;
   if (state.expiresAt <= Date.now()) {
     worldBookMenus.delete(key);
+    state.cleanup.resume();
     return null;
   }
-  state.expiresAt = Date.now() + WORLD_BOOK_MENU_TTL_MS;
+  state.expiresAt = Date.now() + (state.editPromptMessageId || state.pending || state.saving
+    ? WORLD_BOOK_EDIT_TTL_MS : WORLD_BOOK_MENU_TTL_MS);
+  state.cleanup.touch();
   return state;
 }
 
@@ -401,6 +427,7 @@ async function replyLongTextWithFinalKeyboard(
   botCtx: BotInstanceContext,
   input: string,
   keyboard: unknown,
+  cleanup?: WorldBookMessageCleanup,
 ): Promise<number> {
   const parts = splitTelegramText(input);
   let lastMessageId = 0;
@@ -408,6 +435,7 @@ async function replyLongTextWithFinalKeyboard(
     const message = await replyText(ctx, botCtx, parts[index], {
       reply_markup: index === parts.length - 1 ? keyboard : { inline_keyboard: [] },
     });
+    cleanup?.track(message.message_id);
     lastMessageId = message.message_id;
   }
   return lastMessageId;
@@ -429,10 +457,12 @@ async function showWorldBookList(
   state.selectedEntryRef = null;
   state.editPromptMessageId = null;
   state.pending = null;
+  state.expiresAt = Date.now() + WORLD_BOOK_MENU_TTL_MS;
   const rendered = renderWorldBookPage(state.books, page, botCtx.config.pageSize, state.bookSearch);
   const text = state.scopeLabel ? `${state.scopeLabel}\n\n${rendered.text}` : rendered.text;
-  const message = await replyText(ctx, botCtx, text, { reply_markup: rendered.keyboard });
+  const message = await replyWorldBookText(ctx, botCtx, state, text, { reply_markup: rendered.keyboard });
   state.messageId = message.message_id;
+  state.cleanup.resume();
 }
 
 async function showWorldBookEntries(
@@ -445,6 +475,7 @@ async function showWorldBookEntries(
   state.selectedEntryRef = null;
   state.editPromptMessageId = null;
   state.pending = null;
+  state.expiresAt = Date.now() + WORLD_BOOK_MENU_TTL_MS;
   const rendered = renderWorldBookEntriesPage(
     state.currentBook,
     page,
@@ -452,8 +483,9 @@ async function showWorldBookEntries(
     state.entrySearch,
   );
   const text = state.scopeLabel ? `${state.scopeLabel}\n\n${rendered.text}` : rendered.text;
-  const message = await replyText(ctx, botCtx, text, { reply_markup: rendered.keyboard });
+  const message = await replyWorldBookText(ctx, botCtx, state, text, { reply_markup: rendered.keyboard });
   state.messageId = message.message_id;
+  state.cleanup.resume();
 }
 
 function selectedWorldBookEntry(state: WorldBookMenuState): WorldBookEntryView | null {
@@ -471,8 +503,10 @@ async function showWorldBookEntry(
   if (!entry) throw new AppError("WORLD_BOOK_ENTRY_STALE", "请重新选择世界书条目。", 400);
   state.editPromptMessageId = null;
   state.pending = null;
+  state.expiresAt = Date.now() + WORLD_BOOK_MENU_TTL_MS;
   const rendered = renderWorldBookEntry(state.currentBook, entry);
-  state.messageId = await replyLongTextWithFinalKeyboard(ctx, botCtx, rendered.text, rendered.keyboard);
+  state.messageId = await replyLongTextWithFinalKeyboard(ctx, botCtx, rendered.text, rendered.keyboard, state.cleanup);
+  state.cleanup.resume();
 }
 
 async function openWorldBookMenu(
@@ -501,9 +535,12 @@ async function openWorldBookMenu(
     editPromptMessageId: null,
     pending: null,
     saving: false,
+    cleanup: newWorldBookCleanup(ctx, botCtx, chatId),
     expiresAt: Date.now() + WORLD_BOOK_MENU_TTL_MS,
   };
-  worldBookMenus.set(worldBookMenuKey(accountId, chatId, userId), state);
+  const key = worldBookMenuKey(accountId, chatId, userId);
+  worldBookMenus.get(key)?.cleanup.resume();
+  worldBookMenus.set(key, state);
   await showWorldBookList(ctx, deps, botCtx, state, 0);
 }
 
@@ -558,9 +595,12 @@ async function openCurrentCharacterWorldBookMenu(
     editPromptMessageId: null,
     pending: null,
     saving: false,
+    cleanup: newWorldBookCleanup(ctx, botCtx, chatId),
     expiresAt: Date.now() + WORLD_BOOK_MENU_TTL_MS,
   };
-  worldBookMenus.set(worldBookMenuKey(accountId, chatId, userId), state);
+  const key = worldBookMenuKey(accountId, chatId, userId);
+  worldBookMenus.get(key)?.cleanup.resume();
+  worldBookMenus.set(key, state);
   await showWorldBookEntries(ctx, botCtx, state, 0);
 }
 
@@ -621,7 +661,8 @@ async function handleWorldBookCallback(
     if (data === "wb:edit") {
       const entry = selectedWorldBookEntry(state);
       if (!state.currentBook || !entry) throw new AppError("WORLD_BOOK_ENTRY_STALE", "请重新选择世界书条目。", 400);
-      const prompt = await replyText(ctx, botCtx, [
+      state.cleanup.pause();
+      const prompt = await replyWorldBookText(ctx, botCtx, state, [
         `请回复这条消息，发送 [${entry.uid}] ${entry.comment || "未命名条目"} 的完整新正文。`,
         "",
         "只会修改正文，不会修改关键词或其他参数。Telegram 单条文本上限约 4096 字符。",
@@ -630,7 +671,7 @@ async function handleWorldBookCallback(
       state.editPromptMessageId = prompt.message_id;
       state.messageId = prompt.message_id;
       state.pending = null;
-      state.expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+      state.expiresAt = Date.now() + WORLD_BOOK_EDIT_TTL_MS;
       return;
     }
     if (data === "wb:toggle") {
@@ -641,12 +682,14 @@ async function handleWorldBookCallback(
         expectedRevision: state.currentBook.revision,
         enabled: !entry.enabled,
       };
+      state.expiresAt = Date.now() + WORLD_BOOK_EDIT_TTL_MS;
+      state.cleanup.pause();
       const rendered = renderWorldBookChangePreview({
         bookName: state.currentBook.name,
         entry,
         nextEnabled: !entry.enabled,
       });
-      const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+      const message = await replyWorldBookText(ctx, botCtx, state, rendered.text, { reply_markup: rendered.keyboard });
       state.messageId = message.message_id;
       return;
     }
@@ -658,18 +701,20 @@ async function handleWorldBookCallback(
         expectedRevision: state.currentBook.revision,
         constant: !entry.constant,
       };
+      state.expiresAt = Date.now() + WORLD_BOOK_EDIT_TTL_MS;
+      state.cleanup.pause();
       const rendered = renderWorldBookChangePreview({
         bookName: state.currentBook.name,
         entry,
         nextConstant: !entry.constant,
       });
-      const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+      const message = await replyWorldBookText(ctx, botCtx, state, rendered.text, { reply_markup: rendered.keyboard });
       state.messageId = message.message_id;
       return;
     }
     if (data === "wb:cancel") {
       state.pending = null;
-      await replyText(ctx, botCtx, "已取消，本次没有修改世界书。");
+      await replyWorldBookText(ctx, botCtx, state, "已取消，本次没有修改世界书。");
       await showWorldBookEntry(ctx, botCtx, state);
       return;
     }
@@ -699,7 +744,7 @@ async function handleWorldBookCallback(
         ? await deps.worldBookAdminService.getWorldBook(result.book.id, state.entrySearch)
         : result.book;
       state.selectedEntryRef = entryRef;
-      await replyText(ctx, botCtx, [
+      await replyWorldBookText(ctx, botCtx, state, [
         "✅ 世界书已保存。",
         `备份文件：${result.backupFileName}`,
         "下一次网页完整模式生成会自动重新读取世界书缓存。",
@@ -710,8 +755,10 @@ async function handleWorldBookCallback(
     throw new AppError("WORLD_BOOK_ACTION_INVALID", "不支持的世界书操作。", 400);
   } catch (error) {
     state.pending = null;
+    if (!state.editPromptMessageId) state.expiresAt = Date.now() + WORLD_BOOK_MENU_TTL_MS;
     const message = error instanceof Error ? error.message : String(error);
-    await replyText(ctx, botCtx, `世界书操作失败：${message}`, { priority: "critical" });
+    await replyWorldBookText(ctx, botCtx, state, `世界书操作失败：${message}`, { priority: "critical" });
+    if (!state.editPromptMessageId) state.cleanup.resume();
   }
 }
 
@@ -1135,8 +1182,15 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     if (!userId || !ctx.chat?.id) return;
     const accountId = getAccountId(userId, deps, botCtx);
     if (!await requireWorldBookAdmin(ctx, deps, botCtx, accountId)) return;
-    worldBookMenus.delete(worldBookMenuKey(accountId, ctx.chat.id, userId));
-    await replyText(ctx, botCtx, "已退出世界书编辑，本次没有保存任何待确认修改。");
+    const key = worldBookMenuKey(accountId, ctx.chat.id, userId);
+    const state = worldBookMenus.get(key);
+    worldBookMenus.delete(key);
+    if (state) {
+      await replyWorldBookText(ctx, botCtx, state, "已退出世界书编辑，本次没有保存任何待确认修改。");
+      state.cleanup.resume();
+    } else {
+      await replyText(ctx, botCtx, "已退出世界书编辑，本次没有保存任何待确认修改。");
+    }
   });
 
   bot.command("model", async (ctx) => {
@@ -2384,13 +2438,14 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       const entry = selectedWorldBookEntry(worldBookState);
       if (!worldBookState.currentBook || !entry) {
         worldBookMenus.delete(worldBookMenuKey(accountId, worldBookState.chatId, userId));
+        worldBookState.cleanup.resume();
         await replyText(ctx, botCtx, "世界书编辑状态已失效，请重新使用 /worldbook。", { priority: "critical" });
         return;
       }
       const nextContent = ctx.message.text;
       if (nextContent === entry.content) {
         worldBookState.editPromptMessageId = null;
-        await replyText(ctx, botCtx, "新正文与原正文相同，没有需要保存的修改。");
+        await replyWorldBookText(ctx, botCtx, worldBookState, "新正文与原正文相同，没有需要保存的修改。");
         await showWorldBookEntry(ctx, botCtx, worldBookState);
         return;
       }
@@ -2399,13 +2454,14 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
         expectedRevision: worldBookState.currentBook.revision,
         content: nextContent,
       };
+      worldBookState.expiresAt = Date.now() + WORLD_BOOK_EDIT_TTL_MS;
       worldBookState.editPromptMessageId = null;
       const rendered = renderWorldBookChangePreview({
         bookName: worldBookState.currentBook.name,
         entry,
         nextContent,
       });
-      const message = await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+      const message = await replyWorldBookText(ctx, botCtx, worldBookState, rendered.text, { reply_markup: rendered.keyboard });
       worldBookState.messageId = message.message_id;
       return;
     }
