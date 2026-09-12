@@ -2389,10 +2389,17 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
         await ctx.answerCallbackQuery({ text: "需要 SillyTavern 管理员权限" });
         return;
       }
+      let globalCallbackAnswered = false;
+      const answerGlobalCallback = async (options?: Parameters<typeof ctx.answerCallbackQuery>[0]) => {
+        if (globalCallbackAnswered) return;
+        globalCallbackAnswered = true;
+        await ctx.answerCallbackQuery(options);
+      };
       try {
+        const mutating = /^(?:gapi:s:|gpreset:s:|gpmode:s:|gprompt:a:|gprompt:ba:|gsettings:undo$)/.test(data);
+        await answerGlobalCallback({ text: mutating ? "正在处理酒馆全局设置" : "正在读取酒馆全局设置" });
         if (data.startsWith("gapi:p:")) {
           const page = Number(data.split(":")[2] ?? 0);
-          await ctx.answerCallbackQuery();
           const snapshot = await getGlobalSettings(accountId, deps);
           await editGlobalSettingsMessage(ctx, botCtx, renderGlobalProfilePage(snapshot, page, botCtx.config.pageSize));
           return;
@@ -2403,14 +2410,14 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
           const snapshot = await getGlobalSettings(accountId, deps);
           const name = snapshot.profiles[page * botCtx.config.pageSize + Number(indexToken)];
           if (!name) {
-            await ctx.answerCallbackQuery({ text: "连接配置列表已经变化" });
+            await answerGlobalCallback({ text: "连接配置列表已经变化" });
             return;
           }
           if (name === snapshot.currentProfile) {
-            await ctx.answerCallbackQuery({ text: "已经是当前全局连接配置" });
+            await answerGlobalCallback({ text: "已经是当前全局连接配置" });
             return;
           }
-          await ctx.answerCallbackQuery({ text: "正在切换全局连接配置" });
+          await answerGlobalCallback({ text: "正在切换全局连接配置" });
           const updated = await deps.webRelayService.executeControl({
             accountId,
             operation: "settings_select_profile",
@@ -2424,7 +2431,6 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
         }
         if (data.startsWith("gpreset:p:")) {
           const page = Number(data.split(":")[2] ?? 0);
-          await ctx.answerCallbackQuery();
           const snapshot = await getGlobalSettings(accountId, deps);
           await editGlobalSettingsMessage(ctx, botCtx, renderGlobalPresetPage(snapshot, page, botCtx.config.pageSize));
           return;
@@ -2435,14 +2441,14 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
           const snapshot = await getGlobalSettings(accountId, deps);
           const name = snapshot.presets[page * botCtx.config.pageSize + Number(indexToken)];
           if (!name) {
-            await ctx.answerCallbackQuery({ text: "预设列表已经变化" });
+            await answerGlobalCallback({ text: "预设列表已经变化" });
             return;
           }
           if (name === snapshot.currentPreset) {
-            await ctx.answerCallbackQuery({ text: "已经是当前全局聊天预设" });
+            await answerGlobalCallback({ text: "已经是当前全局聊天预设" });
             return;
           }
-          await ctx.answerCallbackQuery({ text: "正在切换全局聊天预设" });
+          await answerGlobalCallback({ text: "正在切换全局聊天预设" });
           const updated = await deps.webRelayService.executeControl({
             accountId,
             operation: "settings_select_preset",
@@ -2458,14 +2464,14 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
           const snapshot = await getGlobalSettings(accountId, deps);
           const profile = snapshot.presetProfiles[index];
           if (!profile) {
-            await ctx.answerCallbackQuery({ text: "预设内模型方案已经变化" });
+            await answerGlobalCallback({ text: "预设内模型方案已经变化" });
             return;
           }
           if (profile.active) {
-            await ctx.answerCallbackQuery({ text: "已经是当前预设内模型方案" });
+            await answerGlobalCallback({ text: "已经是当前预设内模型方案" });
             return;
           }
-          await ctx.answerCallbackQuery({ text: "正在切换预设内模型方案" });
+          await answerGlobalCallback({ text: "正在切换预设内模型方案" });
           const updated = await deps.webRelayService.executeControl({
             accountId,
             operation: "settings_select_preset_profile",
@@ -2478,7 +2484,6 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
         }
         if (data.startsWith("gprompt:sections:")) {
           const page = Number(data.split(":")[2] ?? 0);
-          await ctx.answerCallbackQuery();
           const snapshot = await getGlobalSettings(accountId, deps);
           await editGlobalSettingsMessage(ctx, botCtx, renderPromptSections(snapshot, page, botCtx.config.pageSize));
           return;
@@ -2492,7 +2497,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
             Number(pageToken),
             botCtx.config.pageSize,
           );
-          await ctx.answerCallbackQuery(rendered ? undefined : { text: "预设分类已经变化" });
+          await answerGlobalCallback(rendered ? undefined : { text: "预设分类已经变化" });
           if (rendered) await editGlobalSettingsMessage(ctx, botCtx, rendered);
           return;
         }
@@ -2506,7 +2511,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
             Number(pageToken),
             botCtx.config.pageSize,
           );
-          await ctx.answerCallbackQuery(rendered ? undefined : { text: "预设分组已经变化" });
+          await answerGlobalCallback(rendered ? undefined : { text: "预设分组已经变化" });
           if (rendered) await editGlobalSettingsMessage(ctx, botCtx, rendered);
           return;
         }
@@ -2520,7 +2525,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
             Number(pageToken),
             Number(optionToken),
           );
-          await ctx.answerCallbackQuery(rendered ? undefined : { text: "预设选项已经变化" });
+          await answerGlobalCallback(rendered ? undefined : { text: "预设选项已经变化" });
           if (rendered) await editGlobalSettingsMessage(ctx, botCtx, rendered);
           return;
         }
@@ -2534,10 +2539,10 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
           const snapshot = await getGlobalSettings(accountId, deps);
           const entry = groupGlobalPrompts(snapshot.prompts, snapshot.promptLayout)[sectionIndex]?.groups[groupIndex]?.entries[optionIndex];
           if (!entry) {
-            await ctx.answerCallbackQuery({ text: "预设选项已经变化" });
+            await answerGlobalCallback({ text: "预设选项已经变化" });
             return;
           }
-          await ctx.answerCallbackQuery({ text: enabled ? "正在全局启用" : "正在全局禁用" });
+          await answerGlobalCallback({ text: enabled ? "正在全局启用" : "正在全局禁用" });
           const updated = entry.enabled === enabled
             ? snapshot
             : await deps.webRelayService.executeControl({
@@ -2561,7 +2566,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
             Number(pageToken),
             enabledToken === "1",
           );
-          await ctx.answerCallbackQuery(rendered ? undefined : { text: "预设分组已经变化" });
+          await answerGlobalCallback(rendered ? undefined : { text: "预设分组已经变化" });
           if (rendered) await editGlobalSettingsMessage(ctx, botCtx, rendered);
           return;
         }
@@ -2574,11 +2579,11 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
           const snapshot = await getGlobalSettings(accountId, deps);
           const group = groupGlobalPrompts(snapshot.prompts, snapshot.promptLayout)[sectionIndex]?.groups[groupIndex];
           if (!group) {
-            await ctx.answerCallbackQuery({ text: "预设分组已经变化" });
+            await answerGlobalCallback({ text: "预设分组已经变化" });
             return;
           }
           const identifiers = group.entries.filter((entry) => entry.enabled !== enabled).map((entry) => entry.identifier);
-          await ctx.answerCallbackQuery({ text: enabled ? "正在全部启用" : "正在全部禁用" });
+          await answerGlobalCallback({ text: enabled ? "正在全部启用" : "正在全部禁用" });
           const updated = identifiers.length === 0
             ? snapshot
             : await deps.webRelayService.executeControl({
@@ -2593,7 +2598,7 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
           return;
         }
         if (data === "gsettings:undo") {
-          await ctx.answerCallbackQuery({ text: "正在撤销上次全局修改" });
+          await answerGlobalCallback({ text: "正在撤销上次全局修改" });
           const updated = await deps.webRelayService.executeControl({ accountId, operation: "settings_undo" });
           deps.modelService.clearModelSelection(accountId);
           const rendered = renderGlobalPresetPage(updated, 0, botCtx.config.pageSize);
