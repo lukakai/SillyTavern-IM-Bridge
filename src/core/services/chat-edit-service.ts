@@ -103,6 +103,35 @@ export function removeLastTurnMessages(messages: ChatMessage[]): { chat: ChatMes
   };
 }
 
+export function removeLastTurnsMessages(
+  messages: ChatMessage[],
+  count: number,
+): { chat: ChatMessage[]; removed: LastTurnDetails[] } {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new AppError("UNDO_COUNT_INVALID", "删除轮数必须是正整数。", 400);
+  }
+
+  let chat = [...messages];
+  const removed: LastTurnDetails[] = [];
+  for (let index = 0; index < count; index += 1) {
+    try {
+      const result = removeLastTurnMessages(chat);
+      chat = result.chat;
+      removed.push(result.removed);
+    } catch (error) {
+      if (error instanceof AppError && error.code === "NO_LAST_TURN" && removed.length > 0) {
+        throw new AppError(
+          "UNDO_COUNT_EXCEEDS_HISTORY",
+          `当前会话只有 ${removed.length} 轮可删除，无法删除 ${count} 轮。`,
+          400,
+        );
+      }
+      throw error;
+    }
+  }
+  return { chat, removed };
+}
+
 export interface AssistantSwipeState {
   message: ChatMessage;
   index: number;
@@ -424,12 +453,26 @@ export class ChatEditService {
     characterName: string;
     chatFile: string;
   }): Promise<{ removed: LastTurnDetails; latestRecord: LatestDialogueRecord | null }> {
+    const result = await this.deleteLastTurns({ ...params, count: 1 });
+    return {
+      removed: result.removed[0],
+      latestRecord: result.latestRecord,
+    };
+  }
+
+  public async deleteLastTurns(params: {
+    accountId: string;
+    avatar: string;
+    characterName: string;
+    chatFile: string;
+    count: number;
+  }): Promise<{ removed: LastTurnDetails[]; latestRecord: LatestDialogueRecord | null }> {
     return this.sessionTaskQueue.runExclusive(
       buildSessionMutationKey(params.accountId, params.avatar, params.chatFile),
       async () => {
         const messages = await this.stClient.getChatMessages(params.avatar, params.chatFile);
         assertChatIntact(params.avatar, params.chatFile, messages);
-        const result = removeLastTurnMessages(messages);
+        const result = removeLastTurnsMessages(messages, params.count);
 
         await this.stClient.saveChat({
           avatar: params.avatar,

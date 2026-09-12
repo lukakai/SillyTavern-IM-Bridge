@@ -228,7 +228,8 @@ external_identities(id PK, account_id, channel, external_user_id, UNIQUE(channel
 
 | Method | Path | 中间件 | 说明 |
 |---|---|---|---|
-| GET | /probe | （无 login） | 探活，UI 用来判断插件是否安装 |
+| GET | /probe | （无 login） | 轻量存活探针，UI 用来判断插件是否安装 |
+| GET | /health | （无 login） | 聚合数据库、Bot、网页中继状态；数据库异常时返回 503 |
 | GET | /me | login | 当前 ST 用户摘要 + bot 状态 |
 | GET | /characters | login | 角色列表 |
 | GET | /characters/:avatar | login | 角色卡 |

@@ -1,5 +1,13 @@
 ﻿import crypto from "node:crypto";
-import type { CharacterCardDetails, CharacterSummary, ChatMessage, ChatSearchResult, StoredChatSession } from "../models/index";
+import type {
+  CharacterCardDetails,
+  CharacterSummary,
+  ChatMessage,
+  ChatSearchResult,
+  RecentSession,
+  RecentSessionPreview,
+  StoredChatSession,
+} from "../models/index";
 import { StClient } from "../../infra/st/st-client";
 import { normalizeChatFileName, timestampToMillis } from "../../infra/st/st-chat-mapper";
 import { AppError } from "../../shared/errors/app-error";
@@ -95,6 +103,31 @@ export class CharacterService {
 
   public listCharacterChats(avatar: string): Promise<ChatSearchResult[]> {
     return this.stClient.listCharacterChats(avatar);
+  }
+
+  public async addRecentSessionPreviews(items: RecentSession[]): Promise<RecentSessionPreview[]> {
+    const avatars = Array.from(new Set(items.map((item) => item.characterAvatar)));
+    const results = await Promise.allSettled(
+      avatars.map(async (avatar) => ({ avatar, chats: await this.stClient.listCharacterChats(avatar) })),
+    );
+    const chatsByAvatar = new Map<string, ChatSearchResult[]>();
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        chatsByAvatar.set(result.value.avatar, result.value.chats);
+      }
+    }
+
+    return items.map((item) => {
+      const normalizedChatFile = normalizeChatFileName(item.chatFile);
+      const summary = chatsByAvatar.get(item.characterAvatar)
+        ?.find((chat) => normalizeChatFileName(chat.fileId) === normalizedChatFile);
+      return {
+        ...item,
+        messageCount: summary?.messageCount ?? null,
+        lastMessageAt: summary?.lastMessageAt ?? item.lastUsedAt,
+        previewMessage: summary?.previewMessage?.trim() || null,
+      };
+    });
   }
 
   public async listCharacterOpenings(avatar: string): Promise<string[]> {

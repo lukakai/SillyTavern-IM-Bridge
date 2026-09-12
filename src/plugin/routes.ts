@@ -11,6 +11,7 @@ import {
   requireSelfOrAdmin,
 } from "./middleware";
 import { createRateLimiter } from "./rate-limit";
+import { buildHealthSnapshot } from "./health";
 
 interface RequestContext { requestId: string; traceId: string }
 
@@ -114,6 +115,10 @@ export function registerRoutes(router: Router, services: AppServices): void {
   router.use(express.json({ limit: "1mb" }));
 
   router.get("/probe", (_req, res) => { res.status(204).end(); });
+  router.get("/health", (_req, res) => {
+    const health = buildHealthSnapshot(services);
+    res.status(health.status === "unhealthy" ? 503 : 200).json(health);
+  });
 
   router.use(requireSTLogin(services.repositories.accountRepository));
 

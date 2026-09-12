@@ -125,6 +125,13 @@ export interface TurnRepository {
     sessionKey: string;
     externalRefMatches?: Record<string, string | number>;
   }): TurnRecord | null;
+  listLatestActiveTurnRecords(params: {
+    accountId: string;
+    channel: IdentityChannel;
+    sessionKey: string;
+    externalRefMatches?: Record<string, string | number>;
+    limit?: number;
+  }): TurnRecord[];
   updateTurnExternalRefs(id: number, externalRefs: Record<string, unknown>): void;
   updateTurnRecord(id: number, params: {
     requestId?: string | null;

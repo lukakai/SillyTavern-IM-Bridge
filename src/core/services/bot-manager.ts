@@ -127,6 +127,7 @@ export class BotManager {
         entry.lastError = error instanceof Error ? error.message : String(error);
         entry.status = "error";
         console.error(JSON.stringify({ scope: "bot_manager", accountId, event: "bot_start_failed", message: entry.lastError }));
+        void this.notifyTerminalFailure(entry, cfg.telegramAllowedUserIds);
       });
 
     this.deps.configRepo.upsert(accountId, { botEnabled: true });
@@ -197,5 +198,28 @@ export class BotManager {
     const ids = [...this.entries.keys()];
     // 进程退出只停 polling，绝不能把 bot_enabled 打成 0，否则下次 autostartAll 会空跑。
     await Promise.allSettled(ids.map((id) => this.stopBot(id, { disable: false })));
+  }
+
+  private async notifyTerminalFailure(entry: BotEntry, telegramUserIds: string[]): Promise<void> {
+    if (telegramUserIds.length === 0) return;
+    const reason = (entry.lastError ?? "未知错误").replace(/\s+/g, " ").slice(0, 300);
+    const text = [
+      "⚠️ Telegram Bot 轮询已停止",
+      `原因：${reason}`,
+      "请到 SillyTavern 的 IM Bridge 管理页查看状态并重启 Bot。",
+    ].join("\n");
+    const results = await Promise.allSettled(
+      telegramUserIds.map((telegramUserId) => entry.bot.api.sendMessage(telegramUserId, text)),
+    );
+    const failed = results.filter((result) => result.status === "rejected").length;
+    if (failed > 0) {
+      console.error(JSON.stringify({
+        scope: "bot_manager",
+        accountId: entry.accountId,
+        event: "terminal_failure_alert_failed",
+        failed,
+        total: results.length,
+      }));
+    }
   }
 }

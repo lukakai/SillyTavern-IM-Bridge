@@ -9,9 +9,9 @@ import type {
   ModelSummary,
   MvuRangeHint,
   MvuStatusSnapshot,
-  RecentSession,
+  RecentSessionPreview,
 } from "../../core/models/index";
-import { timestampToMillis } from "../../infra/st/st-chat-mapper";
+import { compactText, timestampToMillis } from "../../infra/st/st-chat-mapper";
 import {
   createXuanxiangState,
   extractXuanxiang,
@@ -163,13 +163,25 @@ export function renderHistoryPage(characterName: string, chats: ChatSearchResult
   };
 }
 
-export function renderRecentSessionsPage(recentSessions: RecentSession[]): { text: string; keyboard: InlineKeyboard } {
+function truncatePreview(input: string, maxLength = 100): string {
+  const compact = compactText(input);
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
+}
+
+export function renderRecentSessionsPage(recentSessions: RecentSessionPreview[]): { text: string; keyboard: InlineKeyboard } {
   const lines = ["最近会话：", ""];
 
   recentSessions.forEach((item, index) => {
     lines.push(`${index + 1}. ${item.characterName}`);
     lines.push(`   ${item.chatFile}.jsonl`);
-    lines.push(`   ${formatDateTime(item.lastUsedAt)}`);
+    const details = [
+      item.messageCount === null ? "" : `${item.messageCount} 条消息`,
+      formatDateTime(item.lastMessageAt ?? item.lastUsedAt),
+    ].filter(Boolean);
+    lines.push(`   ${details.join(" | ")}`);
+    if (item.previewMessage) {
+      lines.push(`   最后：${truncatePreview(item.previewMessage)}`);
+    }
     lines.push("");
   });
 
@@ -573,9 +585,10 @@ export function renderHelp(): string {
     "/now - 查看当前会话",
     "/last - 查看最后一轮",
     "/redo - 重新生成当前回复",
-    "/undo - 删除最后一轮",
+    "/undo [数量] - 删除最近一轮或多轮（最多 10 轮）",
     "/revoke - 撤回上一轮（TG + ST）",
     "/recent - 查看最近使用的会话",
+    "/health - 查看数据库、Bot 与网页中继状态",
     "/model - 查看并切换当前可用模型",
     "/cmodel - 查看并切换压缩专用模型",
     "/prompt - 查看或切换提示词模式",
@@ -635,6 +648,19 @@ export function renderUndoResult(details: LastTurnDetails): string {
     lines.push(details.assistantMessage.text);
   }
 
+  return lines.join("\n").trim();
+}
+
+export function renderUndoResults(items: LastTurnDetails[]): string {
+  if (items.length === 1) return renderUndoResult(items[0]);
+  const lines = [`已删除最近 ${items.length} 轮：`, ""];
+  items.forEach((details, index) => {
+    const parts = [
+      details.userMessage ? `用户：${truncatePreview(details.userMessage.text, 120)}` : "",
+      details.assistantMessage ? `角色：${truncatePreview(details.assistantMessage.text, 120)}` : "",
+    ].filter(Boolean);
+    lines.push(`${index + 1}. ${parts.join(" / ")}`);
+  });
   return lines.join("\n").trim();
 }
 

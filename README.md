@@ -15,6 +15,9 @@ SillyTavern server plugin: bridge ST chats to instant messaging channels (curren
 - 对使用 EJS 动态注入选项规则的角色卡，只解析明确的 `选项栏输出规范` 引用、MVU 状态路径和数值门槛；不会执行角色卡中的 EJS/JavaScript。当前状态未达到门槛时不会注入相关规则。
 - 每条 Telegram 角色回复提供 SillyTavern Swipe 控件：可按需重新生成当前回复、追加最多 20 条备选，并用左右按钮切换；正文、生成元数据、MVU 快照和 `<xuanxiang>` 交互状态会随所选 Swipe 一起同步回酒馆。普通角色卡同样可用。
 - 支持编辑当前会话最新一轮的 Telegram 用户消息。编辑只同步到 SillyTavern 并保留当前回复，不会立即调用模型；随后点击“重新生成”或“生成备选”时，模型会使用编辑后的内容。更早的 Telegram 消息会被拒绝，避免历史定位和状态错位。
+- `/undo` 删除最后一轮，`/undo 2` 至 `/undo 10` 可一次回退多轮；批量操作会先验证历史数量，再一次写回聊天，数量不足时不会删除任何内容。
+- `/recent` 在一键切换按钮之外显示会话消息数、最后更新时间和最后消息预览；单个角色的会话摘要只请求一次，某个角色读取失败时会保留基础列表。
+- `/health` 显示数据库、Telegram Bot 和网页中继状态；HTTP `GET /api/plugins/st-im-bridge/health` 提供相同的聚合状态，数据库不可用时返回 503，Bot 终止性错误返回 200 + `degraded`，避免无效重启循环。Bot 长轮询彻底退出时还会尽力向已授权用户发送一次告警；Token 失效或网络完全不可达时可能无法送达。
 - 新增 `/prompt web` 网页完整模式：Telegram 只提交生成任务，由一个已登录的 SillyTavern 浏览器页面调用原生 `Generate()`。因此会使用该页面当前的预设、世界书、Persona、Regex、生成拦截器及 MVU 等前端扩展；中继离线时明确报错，不会静默退回简化模式。
 - 新增独立世界书管理：`/worldbook` 浏览或搜索世界书和条目，可修改条目正文、启用或禁用条目；所有写入都要二次确认、检查并发修改，并先生成可直接导入 SillyTavern 的 JSON 备份。不提供删除条目或整本覆盖。
 
@@ -86,6 +89,7 @@ open -na "Google Chrome" --args \
 ## 路径与端口
 
 - 路由前缀：`/api/plugins/st-im-bridge/*`
+- `GET /probe` 仅确认插件路由存活；`GET /health` 返回数据库、Bot 和网页中继的聚合健康状态，不包含 token、账号名或错误详情。
 - 默认 ST 内部回调地址：`http://127.0.0.1:8000`。如 ST 端口不是 8000，启动 ST 前导出环境变量：
   ```sh
   export SILLYTAVERN_INTERNAL_BASE_URL=http://127.0.0.1:<port>
@@ -110,7 +114,7 @@ open -na "Google Chrome" --args \
 ## 端到端验证
 
 1. 启用 plugin，重启 ST，确认日志出现 `[st-im-bridge] init complete`。
-2. `curl --cookie <ST 会话 cookie> http://localhost:8000/api/plugins/st-im-bridge/probe` 返回 204。
+2. `curl --cookie <ST 会话 cookie> http://localhost:8000/api/plugins/st-im-bridge/probe` 返回 204；访问同前缀的 `/health` 应返回 `healthy` 或可解释的 `degraded` 状态。
    > 提示：cookie 含登录态，避免直接粘贴到 shell 命令行（会进 history）。建议把 cookie 写入受限权限的文件用 `--cookie @cookies.txt` 读入，或先 `read -s COOKIE` 再 `curl --cookie "$COOKIE" ...`。
 3. 安装 UI 扩展，打开抽屉，填入 Telegram bot token，点击「保存 Token」「启动」。
 4. 在 UI 内点「生成绑定码」，到 Telegram 私聊 bot 发送 `/bind <code>`；绑定成功后该 TG 账号即可使用 `/help`、`/chars`、`/now`、`/compress`、`/cmodel` 等命令（配对码 5 分钟有效，单次使用，详见 `PROJECT_HANDOVER.md`）。

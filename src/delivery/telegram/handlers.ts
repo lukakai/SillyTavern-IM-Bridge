@@ -29,7 +29,7 @@ import {
   renderProviderPage,
   renderRecentSessionsPage,
   renderTelegramResponse,
-  renderUndoResult,
+  renderUndoResults,
   splitTelegramResponse,
   splitTelegramText,
 } from "./render";
@@ -56,6 +56,7 @@ import {
   renderWorldBookPage,
 } from "./world-book";
 import { WorldBookMessageCleanup } from "./world-book-cleanup";
+import { buildHealthSnapshot, renderHealthSnapshot } from "../../plugin/health";
 
 type BotContext = Context;
 
@@ -804,14 +805,29 @@ function getActiveSessionMessage(chatId: number | undefined, accountId: string, 
 }
 
 function getLatestTelegramTurn(deps: AppServices, accountId: string, chatId: string, avatar: string, chatFile: string) {
-  return deps.repositories.turnRepository.getLatestActiveTurnRecord({
+  return getLatestTelegramTurns(deps, accountId, chatId, avatar, chatFile, 1)[0] ?? null;
+}
+
+function getLatestTelegramTurns(
+  deps: AppServices,
+  accountId: string,
+  chatId: string,
+  avatar: string,
+  chatFile: string,
+  limit: number,
+) {
+  return deps.repositories.turnRepository.listLatestActiveTurnRecords({
     accountId,
     channel: "telegram",
     sessionKey: buildSessionKey(avatar, chatFile),
     externalRefMatches: {
       chatId,
     },
-  });
+    limit: 500,
+  }).filter((record) => record.operation === "telegram_send_stream"
+    || record.operation === "telegram_redo_stream"
+    || (record.operation === null && Boolean(record.clientTurnId)))
+    .slice(0, limit);
 }
 
 function numericMessageIds(value: unknown): number[] {
@@ -1132,8 +1148,15 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       return;
     }
 
-    const rendered = renderRecentSessionsPage(recentSessions);
+    const previews = await deps.characterService.addRecentSessionPreviews(recentSessions);
+    const rendered = renderRecentSessionsPage(previews);
     await replyText(ctx, botCtx, rendered.text, { reply_markup: rendered.keyboard });
+  });
+
+  bot.command("health", async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId) return;
+    await replyText(ctx, botCtx, renderHealthSnapshot(buildHealthSnapshot(deps)));
   });
 
   bot.command(["worldbook", "wb"], async (ctx) => {
@@ -1416,12 +1439,34 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       return;
     }
 
+    const args = (ctx.message?.text ?? "").trim().split(/\s+/).slice(1);
+    const count = args.length === 0 || (args.length === 1 && args[0] === "")
+      ? 1
+      : args.length === 1 && /^\d+$/.test(args[0])
+        ? Number(args[0])
+        : Number.NaN;
+    if (!Number.isInteger(count) || count < 1 || count > 10) {
+      await replyText(ctx, botCtx, "用法：/undo 或 /undo 2（一次最多删除 10 轮）。");
+      return;
+    }
+
     const accountId = getAccountId(userId, deps, botCtx);
     const state = getActiveSessionMessage(ctx.chat?.id, accountId, deps);
     if (!state) {
       await replyText(ctx, botCtx, "当前没有绑定角色和会话。请先使用 /chars 选择角色和历史聊天。");
       return;
     }
+
+    const targetTurns = state.chatId
+      ? getLatestTelegramTurns(
+        deps,
+        accountId,
+        state.chatId,
+        state.activeCharacterAvatar!,
+        state.activeChatFile!,
+        count,
+      )
+      : [];
 
     const requestId = createRequestId();
     const traceId = requestId;
@@ -1433,60 +1478,38 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
       traceId,
       operation: "telegram_undo",
       status: "started",
-      externalRefs: state.chatId ? { chatId: state.chatId } : {},
+      externalRefs: state.chatId ? { chatId: state.chatId, requestedCount: count } : { requestedCount: count },
     });
 
     try {
-      const result = await deps.chatEditService.deleteLastTurn({
+      const result = await deps.chatEditService.deleteLastTurns({
         accountId,
         avatar: state.activeCharacterAvatar!,
         characterName: state.activeCharacterName!,
         chatFile: state.activeChatFile!,
+        count,
       });
 
-      if (state.chatId) {
-        const latestTurn = getLatestTelegramTurn(deps, accountId, state.chatId, state.activeCharacterAvatar!, state.activeChatFile!);
-        if (latestTurn) {
-          deps.repositories.turnRepository.markTurnRevoked(latestTurn.id);
-          deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
-            status: "completed",
-            errorMessage: null,
-            externalRefs: {
-              chatId: state.chatId,
-              revokedTurnRecordId: latestTurn.id,
-              removedUserMessageId: result.removed.userMessage?.messageId ?? null,
-              removedAssistantMessageId: result.removed.assistantMessage?.messageId ?? null,
-              latestMessageId: result.latestRecord?.messageId ?? null,
-              latestTurnId: result.latestRecord?.turnId ?? null,
-            },
-          });
-        } else {
-          deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
-            status: "completed",
-            errorMessage: null,
-            externalRefs: {
-              chatId: state.chatId,
-              removedUserMessageId: result.removed.userMessage?.messageId ?? null,
-              removedAssistantMessageId: result.removed.assistantMessage?.messageId ?? null,
-              latestMessageId: result.latestRecord?.messageId ?? null,
-              latestTurnId: result.latestRecord?.turnId ?? null,
-            },
-          });
-        }
-      } else {
-        deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
-          status: "completed",
-          errorMessage: null,
-          externalRefs: {
-            removedUserMessageId: result.removed.userMessage?.messageId ?? null,
-            removedAssistantMessageId: result.removed.assistantMessage?.messageId ?? null,
-            latestMessageId: result.latestRecord?.messageId ?? null,
-            latestTurnId: result.latestRecord?.turnId ?? null,
-          },
-        });
+      for (const targetTurn of targetTurns) {
+        deps.repositories.turnRepository.markTurnRevoked(targetTurn.id);
       }
+      deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
+        status: "completed",
+        errorMessage: null,
+        externalRefs: {
+          ...(state.chatId ? { chatId: state.chatId } : {}),
+          removedCount: result.removed.length,
+          revokedTurnRecordIds: targetTurns.map((turn) => turn.id),
+          removedTurns: result.removed.map((details) => ({
+            userMessageId: details.userMessage?.messageId ?? null,
+            assistantMessageId: details.assistantMessage?.messageId ?? null,
+          })),
+          latestMessageId: result.latestRecord?.messageId ?? null,
+          latestTurnId: result.latestRecord?.turnId ?? null,
+        },
+      });
 
-      await replyLongText(ctx, botCtx, renderUndoResult(result.removed));
+      await replyLongText(ctx, botCtx, renderUndoResults(result.removed));
     } catch (error) {
       deps.repositories.turnRepository.updateTurnRecord(turnRecordId, {
         status: "failed",

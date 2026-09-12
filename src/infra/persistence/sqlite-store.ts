@@ -439,6 +439,18 @@ export class SqliteTurnRepository implements TurnRepository {
     sessionKey: string;
     externalRefMatches?: Record<string, string | number>;
   }): TurnRecord | null {
+    return this.listLatestActiveTurnRecords({ ...params, limit: 1 })[0] ?? null;
+  }
+
+  public listLatestActiveTurnRecords(params: {
+    accountId: string;
+    channel: IdentityChannel;
+    sessionKey: string;
+    externalRefMatches?: Record<string, string | number>;
+    limit?: number;
+  }): TurnRecord[] {
+    const requestedLimit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 50)));
+    const scanLimit = Math.min(500, Math.max(50, requestedLimit * 5));
     const rows = this.db.prepare(`
       SELECT id, account_id, channel, session_key, client_turn_id, request_id, trace_id, operation, status, error_message, external_refs, created_at, updated_at, revoked_at
       FROM turn_records
@@ -448,18 +460,19 @@ export class SqliteTurnRepository implements TurnRepository {
         AND revoked_at IS NULL
         AND status != 'failed'
       ORDER BY id DESC
-      LIMIT 50
-    `).all(params.accountId, params.channel, params.sessionKey) as Record<string, unknown>[];
+      LIMIT ?
+    `).all(params.accountId, params.channel, params.sessionKey, scanLimit) as Record<string, unknown>[];
 
+    const matches: TurnRecord[] = [];
     for (const row of rows) {
       const record = parseTurnRecord(row);
-      const matches = Object.entries(params.externalRefMatches ?? {}).every(([key, value]) => record.externalRefs[key] === value);
-      if (matches) {
-        return record;
+      const externalRefsMatch = Object.entries(params.externalRefMatches ?? {})
+        .every(([key, value]) => record.externalRefs[key] === value);
+      if (externalRefsMatch) {
+        matches.push(record);
       }
     }
-
-    return null;
+    return matches.slice(0, requestedLimit);
   }
 
   public updateTurnExternalRefs(id: number, externalRefs: Record<string, unknown>): void {

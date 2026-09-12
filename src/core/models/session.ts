@@ -17,3 +17,9 @@ export interface RecentSession {
   activeModelOverride: string | null;
   lastUsedAt: string;
 }
+
+export interface RecentSessionPreview extends RecentSession {
+  messageCount: number | null;
+  lastMessageAt: string | number | null;
+  previewMessage: string | null;
+}

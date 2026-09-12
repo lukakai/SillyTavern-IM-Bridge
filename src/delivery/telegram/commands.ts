@@ -9,7 +9,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "now", description: "查看当前会话" },
   { command: "last", description: "查看最后一轮" },
   { command: "redo", description: "重新生成当前回复" },
-  { command: "undo", description: "删除最后一轮" },
+  { command: "undo", description: "删除最后一轮（可加数量）" },
   { command: "revoke", description: "撤回上一轮(TG+ST)" },
   { command: "model", description: "切换模型" },
   { command: "cmodel", description: "切换压缩模型" },
@@ -19,6 +19,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "wbcancel", description: "退出世界书编辑" },
   { command: "compress", description: "压缩当前会话历史" },
   { command: "recent", description: "最近会话" },
+  { command: "health", description: "查看插件运行状态" },
   { command: "help", description: "查看帮助" },
 ];
 
