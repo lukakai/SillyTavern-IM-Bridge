@@ -589,6 +589,7 @@ export function renderHelp(): string {
     "/revoke - 撤回上一轮（TG + ST）",
     "/recent - 查看最近使用的会话",
     "/health - 查看数据库、Bot 与网页中继状态",
+    "/relay [status|refresh|start|stop|restart] - 查看或控制 Mac mini 无头中继",
     "/api - 查看并切换酒馆全局 Connection Manager 配置",
     "/preset - 切换酒馆全局聊天预设，并管理预设内部选项",
     "/model - 查看并切换酒馆全局模型",

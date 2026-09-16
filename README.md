@@ -133,6 +133,19 @@ open -na "Google Chrome" --args \
 
 SQLite 数据文件位于 `<plugin 根目录>/data/app.db`（启用 WAL，运行后会附带 `app.db-wal` / `app.db-shm`，备份时三个一起复制）。表结构包含 `accounts`、`account_configs`、`bind_codes`、`active_sessions`、`recent_sessions`、`turn_records`、`history_sync_*`、`external_identities`、`app_metadata` 等，由 `ensureCurrentSchema(db)` 幂等 `CREATE IF NOT EXISTS` + `ALTER` 维护。
 
+### Mac mini 无头中继远程控制
+
+Telegram 管理员可用 `/relay status`、`/relay refresh`、`/relay start`、`/relay stop` 和 `/relay restart` 管理专用无头浏览器。`refresh` 在未配置控制器时也能刷新当前在线页面；其余操作需要在 Mac mini 的 UI 扩展仓库 `relay-runner/` 部署控制器。
+
+Tower 的 SillyTavern 容器需要以下环境变量，Token 必须与 Mac mini 钥匙串中控制器 Token 相同：
+
+```text
+RELAY_SUPERVISOR_URL=http://MAC-MINI-LAN-IP:38712
+RELAY_SUPERVISOR_TOKEN=你的随机控制器Token
+```
+
+控制器只接收固定操作，不接收任意 shell 命令。生成遇到 `Got response status 400` 时，桥接会恢复该次聊天快照、刷新页面并在新页面上线后自动重试一次。
+
 ⚠️ **Telegram bot token 在 `account_configs.telegram_bot_token` 字段中以明文存储**。请将 `data/` 目录权限收紧（建议 `chmod 700`）；勿将整个 plugin 目录打包外传。
 
 ## 许可

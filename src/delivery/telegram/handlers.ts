@@ -9,7 +9,8 @@ import type {
   WorldBookSummary,
   WorldBookView,
 } from "../../core/models/index";
-import type { GlobalSettingsSnapshot } from "../../core/services/web-relay-service";
+import type { GlobalSettingsSnapshot, WebRelayStatus } from "../../core/services/web-relay-service";
+import type { RelaySupervisorAction, RelaySupervisorStatus } from "../../core/services/relay-supervisor-client";
 import { AppError } from "../../shared/errors/app-error";
 import { buildSessionKey, createRequestId } from "../../shared/utils/ids";
 import {
@@ -172,6 +173,26 @@ async function requireGlobalSettingsAdmin(
   if (deps.repositories.accountRepository.getSTUserAccount(accountId)?.role === "admin") return true;
   await replyText(ctx, botCtx, "只有 SillyTavern 管理员账号绑定的 Bot 可以修改全局 API、模型和预设。", { priority: "critical" });
   return false;
+}
+
+function renderRelayStatus(relay: WebRelayStatus, supervisor: RelaySupervisorStatus | null): string {
+  const lines = [
+    "Mac mini 网页中继：",
+    `酒馆页面：${relay.online ? `🟢 在线（${relay.workerCount} 个页面）` : "⚪ 离线"}`,
+    `中继版本：${relay.relayVersion ?? "未知"}`,
+    `待处理任务：${relay.pendingJobs}，执行中：${relay.activeJobs}`,
+  ];
+  if (!supervisor) {
+    lines.push("远程控制器：未配置（仅可使用 /relay refresh，且页面必须在线）");
+  } else if (!supervisor.configured) {
+    lines.push("远程控制器：未配置");
+  } else if (!supervisor.reachable) {
+    lines.push(`远程控制器：🔴 不可达${supervisor.message ? `（${supervisor.message}）` : ""}`);
+  } else {
+    lines.push(`无头浏览器服务：${supervisor.state === "running" ? "🟢 运行中" : supervisor.state === "stopped" ? "⚪ 已停止" : "🟡 状态未知"}${supervisor.pid ? `（PID ${supervisor.pid}）` : ""}`);
+  }
+  lines.push("", "/relay refresh - 刷新酒馆页面", "/relay start|stop|restart - 控制无头浏览器服务");
+  return lines.join("\n");
 }
 
 async function getCharacters(deps: AppServices): Promise<CharacterSummary[]> {
@@ -1236,6 +1257,49 @@ export function registerHandlers(bot: Bot<BotContext>, deps: AppServices, botCtx
     const userId = await requireAuthorized(ctx, deps, botCtx);
     if (!userId) return;
     await replyText(ctx, botCtx, renderHealthSnapshot(buildHealthSnapshot(deps)));
+  });
+
+  bot.command("relay", async (ctx) => {
+    const userId = await requireAuthorized(ctx, deps, botCtx);
+    if (!userId) return;
+    const accountId = getAccountId(userId, deps, botCtx);
+    if (!await requireGlobalSettingsAdmin(ctx, deps, botCtx, accountId)) return;
+    const action = (ctx.message?.text ?? "").split(/\s+/)[1]?.trim().toLocaleLowerCase() ?? "status";
+    const allowed = new Set(["status", "refresh", "start", "stop", "restart"]);
+    if (!allowed.has(action)) {
+      await replyText(ctx, botCtx, "用法：/relay [status|refresh|start|stop|restart]");
+      return;
+    }
+
+    if (action === "status") {
+      let supervisor: RelaySupervisorStatus | null = null;
+      try { supervisor = await deps.relaySupervisorClient.getStatus(); } catch (error) {
+        supervisor = {
+          configured: true,
+          reachable: false,
+          state: "unknown",
+          label: null,
+          pid: null,
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+      await replyText(ctx, botCtx, renderRelayStatus(deps.webRelayService.getStatus(accountId), supervisor));
+      return;
+    }
+
+    try {
+      if (action === "refresh" && !deps.relaySupervisorClient.isConfigured()) {
+        await deps.webRelayService.refreshPage(accountId);
+        await replyText(ctx, botCtx, "✅ 酒馆网页已刷新并重新上线。");
+        return;
+      }
+      const supervisor = await deps.relaySupervisorClient.execute(action as RelaySupervisorAction);
+      const label = action === "refresh" ? "已刷新酒馆网页" : action === "restart" ? "已重启无头浏览器" : action === "start" ? "已启动无头浏览器" : "已停止无头浏览器";
+      await replyText(ctx, botCtx, `✅ ${label}。\n${renderRelayStatus(deps.webRelayService.getStatus(accountId), supervisor)}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await replyText(ctx, botCtx, `中继控制失败：${message}`, { priority: "critical" });
+    }
   });
 
   bot.command(["worldbook", "wb"], async (ctx) => {

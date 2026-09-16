@@ -23,6 +23,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "compress", description: "压缩当前会话历史" },
   { command: "recent", description: "最近会话" },
   { command: "health", description: "查看插件运行状态" },
+  { command: "relay", description: "控制 Mac mini 无头中继" },
   { command: "help", description: "查看帮助" },
 ];
 

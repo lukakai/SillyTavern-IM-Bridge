@@ -88,6 +88,20 @@ describe("WebRelayService", () => {
     expect(service.getStatus("account")).toMatchObject({ pendingJobs: 0, activeJobs: 0 });
   });
 
+  it("refreshes the authenticated page and waits for a new page instance", async () => {
+    const service = createService();
+    service.heartbeat("account", { workerId: "worker", pageInstanceId: "before-refresh" });
+    const refreshing = service.refreshPage("account");
+
+    const job = await service.poll("account", { workerId: "worker", pageInstanceId: "before-refresh" }, 0);
+    expect(job).toMatchObject({ operation: "relay_refresh" });
+    service.complete("account", "worker", job!.id, {});
+    service.heartbeat("account", { workerId: "worker", pageInstanceId: "after-refresh" });
+
+    await expect(refreshing).resolves.toBeUndefined();
+    expect(service.getStatus("account").pageInstanceId).toBe("after-refresh");
+  });
+
   it("does not let a different browser finish a claimed job", async () => {
     const service = createService();
     service.heartbeat("account", { workerId: "worker-a" });

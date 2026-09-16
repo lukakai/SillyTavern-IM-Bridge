@@ -3,6 +3,7 @@ import { AppError } from "../../shared/errors/app-error";
 
 export type WebRelayGenerationOperation = "send" | "regenerate";
 export type WebRelayControlOperation =
+  | "relay_refresh"
   | "settings_snapshot"
   | "settings_select_profile"
   | "settings_select_preset"
@@ -75,6 +76,7 @@ export interface WebRelayStatus {
   lastSeenAt: string | null;
   relayVersion: string | null;
   pageUrl: string | null;
+  pageInstanceId: string | null;
   pendingJobs: number;
   activeJobs: number;
 }
@@ -91,6 +93,7 @@ interface RelayPresence {
   lastSeenMs: number;
   relayVersion: string | null;
   pageUrl: string | null;
+  pageInstanceId: string | null;
 }
 
 interface InternalJob {
@@ -108,6 +111,7 @@ interface RelayIdentity {
   workerId: string;
   relayVersion?: string | null;
   pageUrl?: string | null;
+  pageInstanceId?: string | null;
 }
 
 const DEFAULT_OPTIONS: WebRelayServiceOptions = {
@@ -197,7 +201,7 @@ function normalizeControlPayload(
   value: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   const payload = value ?? {};
-  if (operation === "settings_snapshot" || operation === "settings_undo") return {};
+  if (operation === "relay_refresh" || operation === "settings_snapshot" || operation === "settings_undo") return {};
   if (operation === "settings_set_prompt_entries") {
     if (!Array.isArray(payload.identifiers) || payload.identifiers.length < 1 || payload.identifiers.length > 500) {
       throw new AppError("WEB_RELAY_SETTINGS_INVALID_PAYLOAD", "预设选项列表无效", 400);
@@ -301,6 +305,7 @@ export class WebRelayService {
       lastSeenMs: now,
       relayVersion: optionalText(identity.relayVersion),
       pageUrl: optionalText(identity.pageUrl),
+      pageInstanceId: optionalText(identity.pageInstanceId),
     });
     this.presenceByAccount.set(accountId, workers);
 
@@ -327,6 +332,7 @@ export class WebRelayService {
       lastSeenAt: workers[0] ? new Date(workers[0].lastSeenMs).toISOString() : null,
       relayVersion: workers[0]?.relayVersion ?? null,
       pageUrl: workers[0]?.pageUrl ?? null,
+      pageInstanceId: workers[0]?.pageInstanceId ?? null,
       pendingJobs: accountJobs.filter((job) => job.state === "pending").length,
       activeJobs: accountJobs.filter((job) => job.state === "claimed").length,
     };
@@ -380,6 +386,33 @@ export class WebRelayService {
     };
     const completion = await this.enqueue(accountId, publicJob, Math.min(this.options.jobTimeoutMs, 120_000));
     return decodeGlobalSettingsSnapshot(completion.result);
+  }
+
+  /** Reload the authenticated ST page and wait until its new document reconnects. */
+  public async refreshPage(accountId: string): Promise<void> {
+    const account = requiredText(accountId, "accountId");
+    const previous = this.requireOnline(account).pageInstanceId;
+    const completion = await this.enqueue(account, {
+      id: crypto.randomUUID(),
+      operation: "relay_refresh",
+      avatar: "",
+      characterName: "",
+      chatFile: "",
+      text: null,
+      modelOverride: null,
+      controlPayload: {},
+      createdAt: "",
+      expiresAt: "",
+    }, 30_000);
+    void completion;
+
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const current = this.getStatus(account);
+      if (current.online && current.pageInstanceId && current.pageInstanceId !== previous) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+    }
+    throw new AppError("WEB_RELAY_REFRESH_TIMEOUT", "酒馆网页刷新后未能重新上线", 504);
   }
 
   private enqueue(accountId: string, publicJob: WebRelayJob, timeoutMs: number): Promise<WebRelayCompletion> {

@@ -19,6 +19,9 @@ export interface RuntimeContext {
   webRelayPresenceTimeoutMs: number;
   /** Claimed jobs become available again if heartbeats stop for this long. */
   webRelayLeaseTimeoutMs: number;
+  /** Mac mini controller, used only for fixed relay start/stop/restart actions. */
+  relaySupervisorUrl: string | null;
+  relaySupervisorToken: string | null;
   pageSize: number;
   rateLimitWindowMs: number;
   rateLimitMaxRequests: number;
@@ -60,6 +63,8 @@ export function loadRuntimeContext(): RuntimeContext {
     webRelayJobTimeoutMs: intEnv("WEB_RELAY_JOB_TIMEOUT_MS", 900_000),
     webRelayPresenceTimeoutMs: intEnv("WEB_RELAY_PRESENCE_TIMEOUT_MS", 120_000),
     webRelayLeaseTimeoutMs: intEnv("WEB_RELAY_LEASE_TIMEOUT_MS", 120_000),
+    relaySupervisorUrl: strEnv("RELAY_SUPERVISOR_URL"),
+    relaySupervisorToken: strEnv("RELAY_SUPERVISOR_TOKEN"),
     pageSize: intEnv("PAGE_SIZE", 8),
     rateLimitWindowMs: intEnv("RATE_LIMIT_WINDOW_MS", 60000),
     rateLimitMaxRequests: intEnv("RATE_LIMIT_MAX_REQUESTS", 60),

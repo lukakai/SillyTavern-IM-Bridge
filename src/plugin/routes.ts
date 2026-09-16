@@ -153,8 +153,9 @@ export function registerRoutes(router: Router, services: AppServices): void {
     const workerId = typeof req.body?.workerId === "string" ? req.body.workerId.slice(0, 200) : "";
     const relayVersion = typeof req.body?.relayVersion === "string" ? req.body.relayVersion.slice(0, 100) : null;
     const pageUrl = typeof req.body?.pageUrl === "string" ? req.body.pageUrl.slice(0, 500) : null;
+    const pageInstanceId = typeof req.body?.pageInstanceId === "string" ? req.body.pageInstanceId.slice(0, 200) : null;
     const activeJobId = typeof req.body?.activeJobId === "string" ? req.body.activeJobId.slice(0, 200) : null;
-    res.json(services.webRelayService.heartbeat(accountId, { workerId, relayVersion, pageUrl }, activeJobId));
+    res.json(services.webRelayService.heartbeat(accountId, { workerId, relayVersion, pageUrl, pageInstanceId }, activeJobId));
   }));
 
   router.post("/web-relay/poll", asyncHandler(async (req, res) => {
@@ -162,10 +163,11 @@ export function registerRoutes(router: Router, services: AppServices): void {
     const workerId = typeof req.body?.workerId === "string" ? req.body.workerId.slice(0, 200) : "";
     const relayVersion = typeof req.body?.relayVersion === "string" ? req.body.relayVersion.slice(0, 100) : null;
     const pageUrl = typeof req.body?.pageUrl === "string" ? req.body.pageUrl.slice(0, 500) : null;
+    const pageInstanceId = typeof req.body?.pageInstanceId === "string" ? req.body.pageInstanceId.slice(0, 200) : null;
     const waitMs = Number(req.body?.waitMs);
     const job = await services.webRelayService.poll(
       accountId,
-      { workerId, relayVersion, pageUrl },
+      { workerId, relayVersion, pageUrl, pageInstanceId },
       Number.isFinite(waitMs) ? waitMs : undefined,
     );
     if (!job) {

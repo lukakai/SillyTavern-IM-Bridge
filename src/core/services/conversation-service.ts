@@ -546,7 +546,27 @@ export class ConversationService {
     const backupChat = await this.stClient.getChatMessages(params.avatar, params.chatFile);
     assertChatIntact(params.avatar, params.chatFile, backupChat);
     try {
-      const result = await this.executeWebRelayGeneration(params);
+      let result: GeneratedReplyCandidate;
+      try {
+        result = await this.executeWebRelayGeneration(params);
+      } catch (error) {
+        const refreshable = error instanceof AppError
+          && error.code === "WEB_RELAY_GENERATE_FAILED"
+          && /got response status 400/i.test(error.message);
+        if (!refreshable || !this.webRelayService) throw error;
+
+        // A stale ST page can reject a generation with HTTP 400 while still
+        // sending relay heartbeats. Restore the known chat state before the
+        // single retry so a partially-added user message cannot be duplicated.
+        await this.stClient.saveChat({
+          avatar: params.avatar,
+          characterName: params.characterName,
+          chatFile: params.chatFile,
+          chat: backupChat,
+        });
+        await this.webRelayService.refreshPage(params.accountId);
+        result = await this.executeWebRelayGeneration(params);
+      }
       if (restoreAfterSuccess) {
         await this.stClient.saveChat({
           avatar: params.avatar,

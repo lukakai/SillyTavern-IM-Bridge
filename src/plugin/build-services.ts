@@ -10,6 +10,7 @@ import { AccountConfigService } from "../core/services/account-config-service";
 import { BindCodeService } from "../core/services/bind-code-service";
 import { BotManager } from "../core/services/bot-manager";
 import { WebRelayService } from "../core/services/web-relay-service";
+import { RelaySupervisorClient } from "../core/services/relay-supervisor-client";
 import { WorldBookAdminService } from "../core/services/world-book-admin-service";
 import { CompressionClient } from "../infra/llm/compression-client";
 import { createSqlitePersistence } from "../infra/persistence/sqlite-store";
@@ -46,6 +47,7 @@ export interface AppServices {
   accountConfigService: AccountConfigService;
   bindCodeService: BindCodeService;
   webRelayService: WebRelayService;
+  relaySupervisorClient: RelaySupervisorClient;
   worldBookAdminService: WorldBookAdminService;
   botManager: BotManager;
   repositories: ReturnType<typeof createSqlitePersistence>;
@@ -71,6 +73,10 @@ export function buildServices(): AppServices {
     jobTimeoutMs: runtime.webRelayJobTimeoutMs,
     presenceTimeoutMs: runtime.webRelayPresenceTimeoutMs,
     leaseTimeoutMs: runtime.webRelayLeaseTimeoutMs,
+  });
+  const relaySupervisorClient = new RelaySupervisorClient({
+    baseUrl: runtime.relaySupervisorUrl,
+    token: runtime.relaySupervisorToken,
   });
   const sessionService = new SessionService(repositories.sessionRepository);
   const worldBookAdminService = new WorldBookAdminService(
@@ -119,6 +125,7 @@ export function buildServices(): AppServices {
     accountConfigService,
     bindCodeService,
     webRelayService,
+    relaySupervisorClient,
     worldBookAdminService,
     repositories,
     sseRegistry: new SseRegistry(),
